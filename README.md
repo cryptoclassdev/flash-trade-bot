@@ -166,32 +166,29 @@ curl -sS https://<your-railway-url>/status
 # → open_positions, last_signal_received_at, realized_pnl_today_usdc, trading_params
 ```
 
-### 7. Set up TradingView alerts
+### 7. Set up your Pine strategy + TradingView alert
 
-For each entry/exit condition in your Pine strategy, create an alert with:
+The bot is signal-less without a TradingView alert. This repo ships a **schema example** at `tradingview-strategy.pine` that you can use as-is (trades a trivial EMA cross on BTC), or adapt by replacing the `longSignal` / `shortSignal` lines with your own logic.
 
-- **URL:** `https://<your-railway-url>/webhook`
-- **Message body (JSON):**
+**Step-by-step:**
 
-```json
-{
-  "secret": "<your WEBHOOK_SECRET>",
-  "id": "{{strategy.order.id}}-{{time}}",
-  "action": "{{strategy.order.action}}",
-  "ticker": "{{ticker}}",
-  "contracts": "{{strategy.order.contracts}}",
-  "price": "{{strategy.order.price}}",
-  "position_size_after": "{{strategy.position_size}}",
-  "market_position": "{{strategy.market_position}}",
-  "prev_market_position": "{{strategy.prev_market_position}}",
-  "order_comment": "{{strategy.order.comment}}",
-  "time": "{{time}}"
-}
-```
+1. Open a BTCUSD chart in TradingView (or whatever market matches your `ASSET` env var).
+2. Open **Pine Editor** (bottom panel).
+3. Copy the entire contents of `tradingview-strategy.pine` from this repo. Paste into Pine Editor. Click **Save** (give it a name, any name). Click **Add to chart**.
+4. TradingView opens the **Inputs** dialog. Under **Bot → Webhook Secret**, paste your `WEBHOOK_SECRET` value (the same one you set on Railway). Click **OK**. The script errors with a loud red message if this is empty — that's intentional.
+5. On the chart, click the **⏰ Alert** button (top toolbar).
+6. In the alert dialog:
+   - **Condition:** your strategy name → **"alert() function calls only"**.
+   - **Expiration:** "Open-ended".
+   - **Notifications tab:** check **Webhook URL**, paste `https://<your-railway-url>/webhook`.
+   - **Message:** leave the default. Ignored when the Pine uses `alert()` — the JSON string the script builds is what's sent.
+7. Click **Create**.
 
-A reference Pine strategy is in `tradingview-strategy.pine`.
+That's one alert, handling all buys, sells, and flips for that strategy.
 
-That's it. When your strategy fires, the bot opens/closes/flips a position and notifies you on Telegram.
+**When it fires:** your strategy evaluates on every bar close. When `longSignal` or `shortSignal` goes true, Pine calls `alert()` with a JSON payload, TradingView POSTs it to your Railway URL, the bot validates + dedupes + executes, and you get a Telegram notification.
+
+**If you already have a Pine strategy:** copy just the `WEBHOOK_SECRET = input.string(...)` block and the `alertJson()` helper from `tradingview-strategy.pine` into your script, then add `alert(alertJson("buy", "..."), alert.freq_once_per_bar_close)` after each `strategy.entry()` / `strategy.close()`. Then follow steps 4-7 above.
 
 ---
 
