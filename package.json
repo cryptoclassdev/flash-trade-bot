@@ -12,7 +12,8 @@
     "dryrun": "ts-node --transpile-only scripts/dry-run.ts",
     "balance": "ts-node --transpile-only scripts/check-balance.ts",
     "trades": "ts-node --transpile-only scripts/show-trades.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "TS_NODE_TRANSPILE_ONLY=true node --require ts-node/register --test tests/*.test.ts"
   },
   "engines": {
     "node": ">=20"
