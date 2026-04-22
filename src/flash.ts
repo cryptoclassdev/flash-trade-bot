@@ -62,17 +62,39 @@ async function sendRaw(conn: Connection, tx: VersionedTransaction, priorityMicro
 class ApiBackend implements FlashBackend {
   private cfg: AppConfig;
   private conn: Connection | null;
+  private connFallback: Connection | null;
   private http: AxiosInstance;
 
   constructor(cfg: AppConfig) {
     this.cfg = cfg;
     // Dry-run doesn't need an RPC connection (no sending) — and rpcUrl is empty in that mode.
     this.conn = cfg.dryRunOnly ? null : new Connection(cfg.rpcUrl, "confirmed");
+    this.connFallback = (!cfg.dryRunOnly && cfg.rpcUrlFallback)
+      ? new Connection(cfg.rpcUrlFallback, "confirmed")
+      : null;
     this.http = axios.create({
       baseURL: cfg.flashApiBaseUrl,
       timeout: 15000,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  /**
+   * Broadcast with primary RPC; on a dropped-class error (timeout, 429, 5xx,
+   * dropped-by-network), retry ONCE on the configured fallback. If fallback is
+   * unset or also fails, rethrow the original error so retry.ts can handle it.
+   */
+  private async sendWithFallback(tx: VersionedTransaction): Promise<string> {
+    try {
+      return await sendRaw(this.conn!, tx);
+    } catch (e) {
+      if (!this.connFallback) throw e;
+      const msg = (e as { message?: string } | null)?.message || String(e);
+      const retryable = /dropped|TransactionExpired|behind|rate.?limit|429|503|timeout|ECONNRESET|ETIMEDOUT/i.test(msg);
+      if (!retryable) throw e;
+      console.warn(`[rpc] primary failed (${msg.slice(0, 80)}); trying fallback`);
+      return await sendRaw(this.connFallback, tx);
+    }
   }
 
   /** Safety guard: called before every sign/send. Throws if dry-run or no wallet loaded. */
@@ -127,7 +149,7 @@ class ApiBackend implements FlashBackend {
 
     const kp = this.requireLiveWallet("openPosition");
     const tx = deserializeAndSign(data.transactionBase64, [kp]);
-    const txSig = await sendRaw(this.conn!, tx);
+    const txSig = await this.sendWithFallback(tx);
 
     return {
       txSig,
@@ -170,7 +192,7 @@ class ApiBackend implements FlashBackend {
 
     const kp = this.requireLiveWallet("closePosition");
     const tx = deserializeAndSign(data.transactionBase64, [kp]);
-    const txSig = await sendRaw(this.conn!, tx);
+    const txSig = await this.sendWithFallback(tx);
 
     return {
       txSig,
@@ -202,7 +224,7 @@ class ApiBackend implements FlashBackend {
 
     const kp = this.requireLiveWallet("flipPosition");
     const tx = deserializeAndSign(data.transactionBase64, [kp]);
-    const txSig = await sendRaw(this.conn!, tx);
+    const txSig = await this.sendWithFallback(tx);
     return { txSig };
   }
 

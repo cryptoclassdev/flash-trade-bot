@@ -9,6 +9,8 @@ export type Network = "devnet" | "mainnet-beta";
 export interface AppConfig {
   network: Network;
   rpcUrl: string;
+  /** Optional secondary RPC. Used by ApiBackend when primary throws dropped/timeout/5xx. */
+  rpcUrlFallback: string | null;
   pythnetUrl: string;
   flashApiBaseUrl: string;
   /** null when dryRunOnly=true — the private key is not loaded in that mode. */
@@ -90,9 +92,15 @@ export function loadConfig(): AppConfig {
     walletPubkey = walletKeypair.publicKey.toBase58();
   }
 
+  // Optional mainnet RPC fallback. Only meaningful when network=mainnet-beta.
+  const rpcUrlFallback = network === "mainnet-beta"
+    ? (process.env.RPC_URL_MAINNET_FALLBACK?.trim() || null)
+    : null;
+
   return {
     network,
     rpcUrl,
+    rpcUrlFallback,
     pythnetUrl: process.env.PYTHNET_URL || "https://pythnet.rpcpool.com",
     flashApiBaseUrl: process.env.FLASH_API_BASE_URL || "https://flashapi.trade",
     walletKeypair,
