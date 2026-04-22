@@ -15,6 +15,13 @@ export function getDb(): Database.Database {
   return db;
 }
 
+export function closeDb(): void {
+  if (db) {
+    try { db.close(); } catch { /* already closed */ }
+    db = null;
+  }
+}
+
 function initSchema(d: Database.Database): void {
   d.exec(`
     CREATE TABLE IF NOT EXISTS signals (
