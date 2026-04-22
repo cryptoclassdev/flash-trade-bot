@@ -8,6 +8,8 @@ Deploy it to Railway in about 10 minutes. One wallet per deploy.
 
 > Replace the button URL with your published template link after your first deploy.
 
+> **⚠ Not financial advice. Trading perpetuals with leverage can lose you money, up to and including total loss of deposited capital. By deploying this software you accept the full text of [`DISCLAIMER.md`](./DISCLAIMER.md). Read it before you fund a wallet.**
+
 ---
 
 ## Is this for you?
@@ -308,3 +310,11 @@ See `AGENTS.md` for a deeper architectural overview.
 - **Close-without-open halts the bot.** If you close a position via the flash.trade UI, the next close signal from TradingView will fail because `getOpenPosition()` in the ledger still shows it as open. The bot halts. Reconcile + resume.
 
 Read `SECURITY-NOTES.md` for the trust boundaries.
+
+---
+
+## License and disclaimer
+
+- Bot code: MIT — see [`LICENSE`](./LICENSE).
+- Risk warnings and operational responsibilities: see [`DISCLAIMER.md`](./DISCLAIMER.md). You must read this in full before funding a wallet or deploying on mainnet.
+- `tradingview-strategy.pine` is a schema-only example under the same MIT license. Bring your own real strategy — don't ship this one to production.
