@@ -1,5 +1,7 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
+import rateLimit from "express-rate-limit";
 import { Connection } from "@solana/web3.js";
+import axios from "axios";
 import { loadConfig, AppConfig } from "./config";
 import { validatePayload } from "./verify";
 import {
@@ -8,11 +10,33 @@ import {
   lastSignalReceivedAt,
   openPositions,
   realizedPnlSinceUtcMidnight,
+  closeDb,
 } from "./ledger";
 import { initTelegram, tg } from "./telegram";
 import { execute } from "./executor";
 import { pickBackend } from "./flash";
 import { isHalted, haltReason, clearHalt } from "./halt";
+import { track, drain } from "./shutdown";
+
+/**
+ * Emergency Telegram alert before any other init. Used when loadConfig() throws:
+ * config.ts is the only place that reads TELEGRAM_BOT_TOKEN, so we read env directly.
+ * Silent failure — if Telegram creds aren't set, the user won't be alerted this way,
+ * but the crash log is still in Railway.
+ */
+async function sendBootCrashAlert(err: unknown): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chat = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chat) return;
+  const msg = (err as { message?: string } | null | undefined)?.message || String(err);
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      { chat_id: chat, text: `🛑 flash-trade-bot failed to boot: ${msg}` },
+      { timeout: 5000 }
+    );
+  } catch { /* swallow — can't alert about the alert */ }
+}
 
 /**
  * Preflight checks at boot. Returns a list of warnings; throws on fatal misconfig.
@@ -86,7 +110,19 @@ async function main(): Promise<void> {
   const backend = pickBackend(cfg);
 
   const app = express();
+  app.set("trust proxy", 1); // Railway terminates TLS upstream; trust X-Forwarded-For for rate limit keying
   app.use(express.json({ limit: "16kb" }));
+
+  // Rate limit /webhook only. Health + status stay unlimited for Railway's
+  // own healthcheck + user monitoring. 60 requests/minute per IP is generous
+  // for a single TradingView Pro account (max ~1 alert/bar, rarely under 1m bars).
+  const webhookLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "rate_limited", message: "too many webhook requests" },
+  });
 
   app.get("/health", (_req: Request, res: Response) => {
     res.json({
@@ -118,7 +154,7 @@ async function main(): Promise<void> {
     });
   });
 
-  app.post("/webhook", async (req: Request, res: Response) => {
+  app.post("/webhook", webhookLimiter, async (req: Request, res: Response) => {
     const result = validatePayload(req.body, cfg.webhookSecret);
     if (!result.ok) {
       console.warn(`[webhook] rejected: ${result.message}`);
@@ -138,10 +174,13 @@ async function main(): Promise<void> {
 
     tg.signalReceived(signal.action, signal.ticker, signal.id).catch(() => {});
 
-    execute(signal, { cfg, backend, conn }).catch(async (e) => {
-      console.error(`[executor] uncaught on signal=${signal.id}:`, e);
-      await tg.failed(1, e?.message || String(e)).catch(() => {});
-    });
+    // Track in-flight so graceful shutdown can wait for it
+    track(
+      execute(signal, { cfg, backend, conn }).catch(async (e) => {
+        console.error(`[executor] uncaught on signal=${signal.id}:`, e);
+        await tg.failed(1, e?.message || String(e)).catch(() => {});
+      })
+    );
   });
 
   app.use((err: any, _req: Request, res: Response, _next: any) => {
@@ -152,7 +191,7 @@ async function main(): Promise<void> {
   // Bind 0.0.0.0 so Railway's edge proxy can reach the process. The only
   // authentication layer is the constant-time webhook secret check in verify.ts.
   // Locally, the port is only reachable from your machine.
-  app.listen(cfg.port, "0.0.0.0", () => {
+  const server = app.listen(cfg.port, "0.0.0.0", () => {
     console.log(
       `[boot] flash-trade-bot listening on 0.0.0.0:${cfg.port}  network=${cfg.network}  wallet=${cfg.walletPubkey}` +
       (isHalted() ? `  HALTED: ${haltReason()}` : "")
@@ -164,9 +203,26 @@ async function main(): Promise<void> {
       console.log(`[boot] status page:        https://${publicDomain}/status`);
     }
   });
+
+  // Graceful shutdown: Railway's SIGTERM -> SIGKILL window is 30s.
+  // Stop accepting new webhooks, drain in-flight executors, flush SQLite, exit.
+  let shuttingDown = false;
+  const shutdown = async (sig: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[shutdown] received ${sig}, stopping listener`);
+    server.close(() => console.log("[shutdown] listener closed"));
+    await drain();
+    closeDb();
+    console.log("[shutdown] bye");
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT",  () => void shutdown("SIGINT"));
 }
 
-main().catch((e) => {
-  console.error("[fatal]", e?.message || e);
+main().catch(async (e) => {
+  console.error("[fatal]", (e as { message?: string } | null | undefined)?.message || e);
+  await sendBootCrashAlert(e);
   process.exit(1);
 });
