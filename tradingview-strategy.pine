@@ -1,343 +1,88 @@
-// ============================================================================
-// PLACEHOLDER — Pine Script strategy source not exported yet.
-// ============================================================================
+// flash-trade-bot — Pine strategy template (schema-only example)
 //
-// The Pine Script lives in TradingView's cloud (Pine Editor panel), not in
-// this repository. Sebastian needs to paste the exact strategy source here
-// before handing the package to Seb's team.
+// This file is a MINIMAL EXAMPLE showing how your Pine strategy must emit
+// webhook alerts that this bot can consume. The strategy logic here is
+// intentionally trivial (a basic EMA cross) — REPLACE it with your own.
 //
-// Steps:
-//   1. Open the 15m BTCUSD strategy in TradingView.
-//   2. Open "Pine Editor" (bottom panel).
-//   3. Select all (Cmd+A) → Copy (Cmd+C).
-//   4. Paste below this header block, replacing everything after the "---"
-//      line.
-//   5. Remove this placeholder header if desired; leave it in if you want
-//      future Seb to know where the file came from.
+// The part you must NOT change is the alert() JSON payload shape. The bot's
+// validator (src/verify.ts) rejects any payload missing these fields or with
+// the wrong types.
 //
-// Also confirm the alert-message JSON in the Pine `alert()` call matches
-// the webhook schema the bot expects (see README.md §"TradingView alert
-// payload"). In particular:
-//   - secret, id, action, ticker, contracts, price, position_size_after,
-//     market_position, prev_market_position, order_comment, time
-//   - id must be unique per fire (e.g. "{{strategy.order.id}}-{{timenow}}")
+// Required fields in the webhook JSON body:
+//   secret                 — must match WEBHOOK_SECRET env var on the bot
+//   id                     — unique per fire; bot dedupes on this
+//   action                 — "buy" | "sell"
+//   ticker                 — e.g. "BTCUSD"
+//   contracts              — numeric string (TradingView's strategy.order.contracts)
+//   price                  — numeric string > 0
+//   position_size_after    — numeric string; 0 when flat
+//   market_position        — "long" | "short" | "flat"
+//   prev_market_position   — "long" | "short" | "flat"
+//   order_comment          — free text; used for logging
+//   time                   — ISO timestamp
 //
-// ---
-// // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
-// https://mozilla.org/MPL/2.0/
-// © RSI Divergence Strategy - Entry A+2 with Wick Stop & Extended Milestone TSL
-// Flash Bot v1 — exits emit alert_message JSON for webhook automation
+// The bot uses (prev_market_position, market_position) to derive the intent:
+//   flat  → long  = open long
+//   flat  → short = open short
+//   long  → flat  = close long
+//   short → flat  = close short
+//   long  → short = flip (atomic on mainnet)
+//   short → long  = flip (atomic on mainnet)
+//   any same→same = noop
+//
+// Configure ONE TradingView alert per strategy, set "Message" to the JSON
+// below (literal, with {{...}} placeholders filled by TradingView), set URL
+// to https://<your-railway-url>/webhook, and set trigger to "alert() function
+// calls only". The alert_message below is what TradingView sends.
 
 //@version=6
-strategy("RSI Divergence Strategy - Flash Bot v1", 
-     overlay=true, 
-     initial_capital=10000, 
-     default_qty_type=strategy.fixed, 
-     default_qty_value=0.1, 
-     commission_type=strategy.commission.percent, 
-     commission_value=0.05, 
-     slippage=2,
-     process_orders_on_close=true,
-     max_lines_count=500, 
-     max_labels_count=500)
+strategy("flash-trade-bot schema example",
+     overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     process_orders_on_close=true)
 
-// ============================================================================
-// INPUTS
-// ============================================================================
+// --- inputs ---------------------------------------------------------------
+fastLen = input.int(20,  "Fast EMA")
+slowLen = input.int(50,  "Slow EMA")
 
-rsiLen         = input.int(14, "RSI Length", minval=2, group="RSI Settings")
-rsiSource      = input.source(close, "RSI Source", group="RSI Settings")
+// --- indicators -----------------------------------------------------------
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
 
-pivotLeftBars  = input.int(3, "Pivot Left Bars", minval=2, maxval=30, group="Pivot Settings")
-pivotRightBars = input.int(2, "Pivot Right Bars", minval=1, maxval=30, group="Pivot Settings")
-divMaxBars     = input.int(100, "Max Bars Between Pivots", minval=10, maxval=300, group="Pivot Settings")
-divMinRsiDiff  = input.float(1.0, "Min RSI Difference", minval=0.0, maxval=30.0, step=0.5, group="Pivot Settings")
-recentLookback = input.int(10, "Live Lookback Bars", minval=3, maxval=30, group="Pivot Settings")
+plot(fastEma, color=color.blue,   title="Fast EMA")
+plot(slowEma, color=color.orange, title="Slow EMA")
 
-filterMiddleZone  = input.bool(true, "Filter Middle Zone Divergences (RSI 45-55)", group="Filters")
-rsiLowerThreshold = input.float(45.0, "Middle Zone Lower Threshold", minval=30.0, maxval=50.0, step=1.0, group="Filters")
-rsiUpperThreshold = input.float(55.0, "Middle Zone Upper Threshold", minval=50.0, maxval=70.0, step=1.0, group="Filters")
+// --- signals (REPLACE with your real strategy) ----------------------------
+longSignal  = ta.crossover(fastEma,  slowEma)
+shortSignal = ta.crossunder(fastEma, slowEma)
 
-useBullRsiZone = input.bool(true,  "Restrict Bullish Divergence to RSI Range", tooltip="If ON, bullish divergences are only valid when BOTH swing lows' RSI values fall within the range below.", group="Bullish RSI Zone")
-bullLowerRSI   = input.float(0.0,  "Bullish Lower RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bullish RSI Zone")
-bullUpperRSI   = input.float(50.0, "Bullish Upper RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bullish RSI Zone")
+// --- webhook JSON template ------------------------------------------------
+// Paste your WEBHOOK_SECRET into TradingView's alert dialog — it replaces
+// the {{SECRET}} placeholder when the alert is saved. Do NOT hardcode the
+// secret in this source.
 
-useBearRsiZone = input.bool(true,   "Restrict Bearish Divergence to RSI Range", tooltip="If ON, bearish divergences are only valid when BOTH swing highs' RSI values fall within the range below.", group="Bearish RSI Zone")
-bearLowerRSI   = input.float(50.0,  "Bearish Lower RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bearish RSI Zone")
-bearUpperRSI   = input.float(100.0, "Bearish Upper RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bearish RSI Zone")
+alertJson(action, comment) =>
+    '{' +
+      '"secret":"{{SECRET}}",' +
+      '"id":"' + str.tostring(time) + '-' + action + '",' +
+      '"action":"'               + action + '",' +
+      '"ticker":"'               + syminfo.ticker   + '",' +
+      '"contracts":"'            + str.tostring(strategy.position_size) + '",' +
+      '"price":"'                + str.tostring(close)             + '",' +
+      '"position_size_after":"'  + str.tostring(strategy.position_size) + '",' +
+      '"market_position":"'      + (strategy.position_size > 0 ? "long" : strategy.position_size < 0 ? "short" : "flat") + '",' +
+      '"prev_market_position":"' + (strategy.position_size[1] > 0 ? "long" : strategy.position_size[1] < 0 ? "short" : "flat") + '",' +
+      '"order_comment":"'        + comment   + '",' +
+      '"time":"'                 + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"' +
+    '}'
 
-tradeLongs     = input.bool(true, "Trade Long Side", group="Trade Settings")
-tradeShorts    = input.bool(true, "Trade Short Side", group="Trade Settings")
-reverseOnSignal= input.bool(true, "Reverse Position on Opposite Signal", group="Trade Settings")
-useLiveExits   = input.bool(true, "Use Live Divergences for Exits", group="Trade Settings")
+// --- orders + alerts ------------------------------------------------------
+if longSignal
+    strategy.entry("long", strategy.long)
+    alert(alertJson("buy",  "ema-cross long"),  alert.freq_once_per_bar_close)
 
-useSignalWickStop = input.bool(true, "Use Signal Candle Wick Stop", group="Stop Loss")
-wickBufferPct     = input.float(0.2, "Wick Stop Buffer %", minval=0.0, maxval=5.0, step=0.05, group="Stop Loss")
-
-useMilestoneTSL  = input.bool(true, "Use Milestone Trailing Stop", tooltip="Once price reaches each milestone (2%, 3%, 4%, 5%, 10%, 15%, 20%, 25%), the stop loss locks in at that milestone. Never moves backward.", group="Trailing Stop")
-tslStep1         = input.float(2.0,  "Milestone 1 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep2         = input.float(3.0,  "Milestone 2 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep3         = input.float(4.0,  "Milestone 3 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep4         = input.float(5.0,  "Milestone 4 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep5         = input.float(10.0, "Milestone 5 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep6         = input.float(15.0, "Milestone 6 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep7         = input.float(20.0, "Milestone 7 %", minval=0.5, step=0.5, group="Trailing Stop")
-tslStep8         = input.float(25.0, "Milestone 8 %", minval=0.5, step=0.5, group="Trailing Stop")
-
-// ============================================================================
-// RSI & PIVOTS
-// ============================================================================
-
-rsiVal         = ta.rsi(rsiSource, rsiLen)
-pricePivotLow  = ta.pivotlow(low, pivotLeftBars, pivotRightBars)
-pricePivotHigh = ta.pivothigh(high, pivotLeftBars, pivotRightBars)
-
-// ============================================================================
-// SWING LOW TRACKING — BULLISH DIVERGENCES
-// ============================================================================
-
-var float prevSLPrice = na
-var int   prevSLBar   = na
-var float prevSLRsi   = na
-var float currSLPrice = na
-var int   currSLBar   = na
-var float currSLRsi   = na
-
-regBullDiv = false
-
-if not na(pricePivotLow)
-    prevSLPrice := currSLPrice
-    prevSLBar   := currSLBar
-    prevSLRsi   := currSLRsi
-    currSLPrice := low[pivotRightBars]
-    currSLBar   := bar_index - pivotRightBars
-    currSLRsi   := rsiVal[pivotRightBars]
-
-    if not na(prevSLPrice) and not na(prevSLRsi)
-        barsB = currSLBar - prevSLBar
-        rsiD  = math.abs(currSLRsi - prevSLRsi)
-        bothInMiddleZone = filterMiddleZone and (prevSLRsi >= rsiLowerThreshold and prevSLRsi <= rsiUpperThreshold) and (currSLRsi >= rsiLowerThreshold and currSLRsi <= rsiUpperThreshold)
-        bullZoneOk = not useBullRsiZone or (prevSLRsi >= bullLowerRSI and prevSLRsi <= bullUpperRSI and currSLRsi >= bullLowerRSI and currSLRsi <= bullUpperRSI)
-
-        if barsB > 0 and barsB <= divMaxBars and rsiD >= divMinRsiDiff and not bothInMiddleZone and bullZoneOk
-            if currSLPrice < prevSLPrice and currSLRsi > prevSLRsi
-                regBullDiv := true
-
-// ============================================================================
-// SWING HIGH TRACKING — BEARISH DIVERGENCES
-// ============================================================================
-
-var float prevSHPrice = na
-var int   prevSHBar   = na
-var float prevSHRsi   = na
-var float currSHPrice = na
-var int   currSHBar   = na
-var float currSHRsi   = na
-
-regBearDiv = false
-
-if not na(pricePivotHigh)
-    prevSHPrice := currSHPrice
-    prevSHBar   := currSHBar
-    prevSHRsi   := currSHRsi
-    currSHPrice := high[pivotRightBars]
-    currSHBar   := bar_index - pivotRightBars
-    currSHRsi   := rsiVal[pivotRightBars]
-
-    if not na(prevSHPrice) and not na(prevSHRsi)
-        barsB = currSHBar - prevSHBar
-        rsiD  = math.abs(currSHRsi - prevSHRsi)
-        bothInMiddleZone = filterMiddleZone and (prevSHRsi >= rsiLowerThreshold and prevSHRsi <= rsiUpperThreshold) and (currSHRsi >= rsiLowerThreshold and currSHRsi <= rsiUpperThreshold)
-        bearZoneOk = not useBearRsiZone or (prevSHRsi >= bearLowerRSI and prevSHRsi <= bearUpperRSI and currSHRsi >= bearLowerRSI and currSHRsi <= bearUpperRSI)
-
-        if barsB > 0 and barsB <= divMaxBars and rsiD >= divMinRsiDiff and not bothInMiddleZone and bearZoneOk
-            if currSHPrice > prevSHPrice and currSHRsi < prevSHRsi
-                regBearDiv := true
-
-// ============================================================================
-// LIVE DIVERGENCES (used for exits only if enabled)
-// ============================================================================
-
-recentLowest    = ta.lowest(low, recentLookback)
-recentLowestRsi = ta.valuewhen(low == recentLowest, rsiVal, 0)
-recentHighest   = ta.highest(high, recentLookback)
-recentHighestRsi = ta.valuewhen(high == recentHighest, rsiVal, 0)
-
-liveBullish = false
-if not na(currSLPrice) and not na(currSLRsi)
-    barsFromSwing = bar_index - currSLBar
-    rsiDiffLive = math.abs(recentLowestRsi - currSLRsi)
-    bothInMiddleZoneLive = filterMiddleZone and (recentLowestRsi >= rsiLowerThreshold and recentLowestRsi <= rsiUpperThreshold) and (currSLRsi >= rsiLowerThreshold and currSLRsi <= rsiUpperThreshold)
-    bullZoneOkLive = not useBullRsiZone or (recentLowestRsi >= bullLowerRSI and recentLowestRsi <= bullUpperRSI and currSLRsi >= bullLowerRSI and currSLRsi <= bullUpperRSI)
-    if recentLowest < currSLPrice and recentLowestRsi > currSLRsi and barsFromSwing <= divMaxBars and barsFromSwing > 0 and rsiDiffLive >= divMinRsiDiff and not bothInMiddleZoneLive and bullZoneOkLive
-        liveBullish := true
-
-liveBearish = false
-if not na(currSHPrice) and not na(currSHRsi)
-    barsFromSwing = bar_index - currSHBar
-    rsiDiffLive = math.abs(recentHighestRsi - currSHRsi)
-    bothInMiddleZoneLive = filterMiddleZone and (recentHighestRsi >= rsiLowerThreshold and recentHighestRsi <= rsiUpperThreshold) and (currSHRsi >= rsiLowerThreshold and currSHRsi <= rsiUpperThreshold)
-    bearZoneOkLive = not useBearRsiZone or (recentHighestRsi >= bearLowerRSI and recentHighestRsi <= bearUpperRSI and currSHRsi >= bearLowerRSI and currSHRsi <= bearUpperRSI)
-    if recentHighest > currSHPrice and recentHighestRsi < currSHRsi and barsFromSwing <= divMaxBars and barsFromSwing > 0 and rsiDiffLive >= divMinRsiDiff and not bothInMiddleZoneLive and bearZoneOkLive
-        liveBearish := true
-
-// ============================================================================
-// COMBINED SIGNALS
-// ============================================================================
-
-bullSignalConfirmed = regBullDiv
-bearSignalConfirmed = regBearDiv
-
-bullExitSignal = useLiveExits ? (liveBullish or bullSignalConfirmed) : bullSignalConfirmed
-bearExitSignal = useLiveExits ? (liveBearish or bearSignalConfirmed) : bearSignalConfirmed
-
-// ============================================================================
-// STRATEGY STATE TRACKING (for milestone TSL)
-// ============================================================================
-
-inLong  = strategy.position_size > 0
-inShort = strategy.position_size < 0
-
-var float longWickSL     = na
-var float shortWickSL    = na
-var float longTSLLevel   = na
-var float shortTSLLevel  = na
-var int   longTSLStep    = 0
-var int   shortTSLStep   = 0
-
-// ============================================================================
-// ENTRY LOGIC
-// ============================================================================
-
-longEntry  = tradeLongs  and bullSignalConfirmed
-shortEntry = tradeShorts and bearSignalConfirmed
-
-// Reversal handling: if reverseOnSignal is true, opposite signal closes current position AND opens new one
-if longEntry
-    if inShort and reverseOnSignal
-        strategy.close("Short", comment="Close Short - Reversal", alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"CloseShortRev_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Close Short - Reversal","time":"{{timenow}}"}')
-    strategy.entry("Long", strategy.long, alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"EntryLong_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Entry Long","time":"{{timenow}}"}')
-    longWickSL   := useSignalWickStop ? low[pivotRightBars] * (1 - wickBufferPct / 100) : na
-    longTSLLevel := na
-    longTSLStep  := 0
-
-if shortEntry
-    if inLong and reverseOnSignal
-        strategy.close("Long", comment="Close Long - Reversal", alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"CloseLongRev_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Close Long - Reversal","time":"{{timenow}}"}')
-    strategy.entry("Short", strategy.short, alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"EntryShort_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Entry Short","time":"{{timenow}}"}')
-    shortWickSL   := useSignalWickStop ? high[pivotRightBars] * (1 + wickBufferPct / 100) : na
-    shortTSLLevel := na
-    shortTSLStep  := 0
-
-// ============================================================================
-// EXIT LOGIC — opposite divergence (when not reversing)
-// ============================================================================
-
-if inLong and bearExitSignal and not (bearSignalConfirmed and tradeShorts and reverseOnSignal)
-    strategy.close("Long", comment="Close Long - Bear Div", alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"CloseLongBear_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Close Long - Bear Div","time":"{{timenow}}"}')
-
-if inShort and bullExitSignal and not (bullSignalConfirmed and tradeLongs and reverseOnSignal)
-    strategy.close("Short", comment="Close Short - Bull Div", alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"CloseShortBull_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Close Short - Bull Div","time":"{{timenow}}"}')
-
-// ============================================================================
-// MILESTONE TRAILING STOP UPDATE
-// 8 milestones: 2%, 3%, 4%, 5%, 10%, 15%, 20%, 25%
-// ============================================================================
-
-avgPrice = strategy.position_avg_price
-
-if useMilestoneTSL and inLong and not na(avgPrice) and avgPrice > 0
-    currentGainPct = ((high - avgPrice) / avgPrice) * 100
-    if currentGainPct >= tslStep8 and longTSLStep < 8
-        longTSLStep  := 8
-        longTSLLevel := avgPrice * (1 + tslStep8 / 100)
-    else if currentGainPct >= tslStep7 and longTSLStep < 7
-        longTSLStep  := 7
-        longTSLLevel := avgPrice * (1 + tslStep7 / 100)
-    else if currentGainPct >= tslStep6 and longTSLStep < 6
-        longTSLStep  := 6
-        longTSLLevel := avgPrice * (1 + tslStep6 / 100)
-    else if currentGainPct >= tslStep5 and longTSLStep < 5
-        longTSLStep  := 5
-        longTSLLevel := avgPrice * (1 + tslStep5 / 100)
-    else if currentGainPct >= tslStep4 and longTSLStep < 4
-        longTSLStep  := 4
-        longTSLLevel := avgPrice * (1 + tslStep4 / 100)
-    else if currentGainPct >= tslStep3 and longTSLStep < 3
-        longTSLStep  := 3
-        longTSLLevel := avgPrice * (1 + tslStep3 / 100)
-    else if currentGainPct >= tslStep2 and longTSLStep < 2
-        longTSLStep  := 2
-        longTSLLevel := avgPrice * (1 + tslStep2 / 100)
-    else if currentGainPct >= tslStep1 and longTSLStep < 1
-        longTSLStep  := 1
-        longTSLLevel := avgPrice * (1 + tslStep1 / 100)
-
-if useMilestoneTSL and inShort and not na(avgPrice) and avgPrice > 0
-    currentGainPct = ((avgPrice - low) / avgPrice) * 100
-    if currentGainPct >= tslStep8 and shortTSLStep < 8
-        shortTSLStep  := 8
-        shortTSLLevel := avgPrice * (1 - tslStep8 / 100)
-    else if currentGainPct >= tslStep7 and shortTSLStep < 7
-        shortTSLStep  := 7
-        shortTSLLevel := avgPrice * (1 - tslStep7 / 100)
-    else if currentGainPct >= tslStep6 and shortTSLStep < 6
-        shortTSLStep  := 6
-        shortTSLLevel := avgPrice * (1 - tslStep6 / 100)
-    else if currentGainPct >= tslStep5 and shortTSLStep < 5
-        shortTSLStep  := 5
-        shortTSLLevel := avgPrice * (1 - tslStep5 / 100)
-    else if currentGainPct >= tslStep4 and shortTSLStep < 4
-        shortTSLStep  := 4
-        shortTSLLevel := avgPrice * (1 - tslStep4 / 100)
-    else if currentGainPct >= tslStep3 and shortTSLStep < 3
-        shortTSLStep  := 3
-        shortTSLLevel := avgPrice * (1 - tslStep3 / 100)
-    else if currentGainPct >= tslStep2 and shortTSLStep < 2
-        shortTSLStep  := 2
-        shortTSLLevel := avgPrice * (1 - tslStep2 / 100)
-    else if currentGainPct >= tslStep1 and shortTSLStep < 1
-        shortTSLStep  := 1
-        shortTSLLevel := avgPrice * (1 - tslStep1 / 100)
-
-// ============================================================================
-// STOP LOSS / TRAILING STOP EXIT
-// Combines wick stop and milestone TSL — uses tighter (most protective) of the two
-// ============================================================================
-
-longEffectiveStop  = na(longTSLLevel)  ? longWickSL  : (na(longWickSL)  ? longTSLLevel  : math.max(longWickSL, longTSLLevel))
-shortEffectiveStop = na(shortTSLLevel) ? shortWickSL : (na(shortWickSL) ? shortTSLLevel : math.min(shortWickSL, shortTSLLevel))
-
-if inLong and not na(longEffectiveStop)
-    strategy.exit("Long SL", from_entry="Long", stop=longEffectiveStop, alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"LongSL_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Long SL","time":"{{timenow}}"}')
-
-if inShort and not na(shortEffectiveStop)
-    strategy.exit("Short SL", from_entry="Short", stop=shortEffectiveStop, alert_message='{"secret":"13efb7252a31b8add8002f8dd8f53b956e4e12baa297f115a874bd9f01351997","id":"ShortSL_{{timenow}}","action":"{{strategy.order.action}}","ticker":"{{ticker}}","contracts":"{{strategy.order.contracts}}","price":"{{strategy.order.price}}","position_size_after":"{{strategy.position_size}}","market_position":"{{strategy.market_position}}","prev_market_position":"{{strategy.prev_market_position}}","order_comment":"Short SL","time":"{{timenow}}"}')
-
-// ============================================================================
-// CLEAN UP STATE WHEN FLAT
-// ============================================================================
-
-if strategy.position_size == 0
-    longWickSL    := na
-    shortWickSL   := na
-    longTSLLevel  := na
-    shortTSLLevel := na
-    longTSLStep   := 0
-    shortTSLStep  := 0
-
-// ============================================================================
-// VISUAL: SIGNAL CANDLE TRIANGLES (so you can see what fired the trade)
-// ============================================================================
-
-plotshape(regBullDiv, title="Bullish Div Signal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, offset=-pivotRightBars)
-plotshape(regBearDiv, title="Bearish Div Signal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, offset=-pivotRightBars)
-
-// ============================================================================
-// ALERTS — for Finestel / goodcryptoX / OctoBot webhook automation
-// ============================================================================
-
-alertcondition(longEntry, title="Long Entry", message="RSI Divergence Strategy: Enter Long")
-alertcondition(shortEntry, title="Short Entry", message="RSI Divergence Strategy: Enter Short")
-alertcondition(inLong and bearExitSignal, title="Long Exit", message="RSI Divergence Strategy: Close Long")
-alertcondition(inShort and bullExitSignal, title="Short Exit", message="RSI Divergence Strategy: Close Short")
+if shortSignal
+    strategy.entry("short", strategy.short)
+    alert(alertJson("sell", "ema-cross short"), alert.freq_once_per_bar_close)
