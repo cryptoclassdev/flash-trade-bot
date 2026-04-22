@@ -18,9 +18,21 @@ You are a **technical trader** who wants to run your own automated bot:
 - You have your own TradingView Pro+ account and Pine strategy (or you'll write one).
 - You can generate a Solana wallet and fund it with USDC.
 - You understand that running an automated trading bot can lose money.
-- You read every line of `SECURITY-NOTES.md` before deploying.
+- You read every line of `SECURITY-NOTES.md` and `DISCLAIMER.md` before deploying.
 
 This is **not** a custodial service. You hold your own keys. You pay your own infra. You pick your own strategy. One deploy serves one user.
+
+## New to Solana? Start here.
+
+If you've never touched Solana, these are the prerequisites in order. Budget 30-60 min the first time:
+
+1. **Install a Solana wallet** you already trust (Phantom, Solflare, Backpack). Create or import an account. Write the 24-word seed phrase down, offline. Do not screenshot it.
+2. **Understand that a Solana private key is a 64-byte secret**, usually shown as a 87-88 character base58 string. The `PRIVATE_KEY` env var this bot reads is exactly that string — not the seed phrase, not a JSON file. See "Generate a bot wallet" below.
+3. **Get USDC on Solana** (Circle's stablecoin, mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`). The cheapest path for most users is: buy USDC on a centralized exchange (Coinbase, Kraken, Binance), withdraw to your bot wallet's public address via the Solana network. Fees ~$1. Cross-chain bridging (e.g. from Ethereum) is possible but more expensive.
+4. **Get a Solana RPC endpoint.** The public RPC (`https://api.mainnet-beta.solana.com`) is rate-limited and will drop your sends under load. Sign up at [helius.dev](https://www.helius.dev/) (free tier is enough for one strategy firing at 5+ min intervals), create a mainnet endpoint, copy the URL including the `?api-key=...` part.
+5. **Sign up for TradingView Pro+** ($14.95/mo minimum). Free and Essential tiers cannot send webhook alerts. Without webhook alerts, this bot has no signals to trade on.
+
+Estimated recurring cost before any capital: ~$20/mo. See [What it costs](#what-it-costs-monthly-recurring) below.
 
 ## What it costs (monthly, recurring)
 
@@ -193,6 +205,7 @@ See `.env.example` for the full template. Defaults in **bold**, secrets in *ital
 | `I_UNDERSTAND_REAL_MONEY` | on mainnet | `no` | Must be literal `yes` to boot on mainnet |
 | `DRY_RUN_ONLY` | no | `false` | If `true`, never signs or submits txs. Server refuses to boot in this mode (use `npm run dryrun`). |
 | `RPC_URL_MAINNET` | yes (prod) | — | *Your paid Solana RPC. Public RPC will get rate-limited.* |
+| `RPC_URL_MAINNET_FALLBACK` | no | — | *Optional secondary RPC. Used on dropped/timeout/5xx from primary. Recommended for production: grab a second free-tier endpoint from Triton/QuickNode/Alchemy so one provider outage doesn't kill trades.* |
 | `PRIVATE_KEY` | yes (prod) | — | *Base58 bot wallet secret key. Generate locally. Never share.* |
 | `WEBHOOK_SECRET` | yes (prod) | — | *Shared secret with TradingView alerts. `openssl rand -hex 32`.* |
 | `TELEGRAM_BOT_TOKEN` | yes (prod) | — | *BotFather token* |
