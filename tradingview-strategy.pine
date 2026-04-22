@@ -43,9 +43,23 @@ strategy("flash-trade-bot schema example",
      default_qty_value=1,
      process_orders_on_close=true)
 
-// --- inputs ---------------------------------------------------------------
-fastLen = input.int(20,  "Fast EMA")
-slowLen = input.int(50,  "Slow EMA")
+// --- webhook secret input -------------------------------------------------
+// Paste the WEBHOOK_SECRET value from your Railway env here. TradingView
+// stores Inputs per-chart in the chart's save state — it is NOT written
+// back to this Pine source, so sharing this file will not leak your secret.
+// `confirm=true` forces the Inputs dialog to open the first time you add
+// the strategy to a chart, catching the "forgot to paste" case.
+WEBHOOK_SECRET = input.string("", "Webhook Secret (from Railway env)", confirm=true, group="Bot")
+
+// Fail fast if the secret was left blank. The bot rejects empty/short
+// secrets anyway; this just surfaces the mistake in TradingView, not in
+// production webhook logs.
+if barstate.islast and str.length(WEBHOOK_SECRET) < 16
+    runtime.error("Paste your WEBHOOK_SECRET (from Railway) into Inputs > Bot > 'Webhook Secret' before running this strategy.")
+
+// --- strategy inputs ------------------------------------------------------
+fastLen = input.int(20,  "Fast EMA", group="Signals")
+slowLen = input.int(50,  "Slow EMA", group="Signals")
 
 // --- indicators -----------------------------------------------------------
 fastEma = ta.ema(close, fastLen)
@@ -59,13 +73,13 @@ longSignal  = ta.crossover(fastEma,  slowEma)
 shortSignal = ta.crossunder(fastEma, slowEma)
 
 // --- webhook JSON template ------------------------------------------------
-// Paste your WEBHOOK_SECRET into TradingView's alert dialog — it replaces
-// the {{SECRET}} placeholder when the alert is saved. Do NOT hardcode the
-// secret in this source.
+// Pine's `alert()` sends its string argument to the webhook verbatim.
+// TradingView does NOT run placeholder substitution on alert() strings,
+// so `{{...}}` tokens must not appear here — interpolate via Pine directly.
 
 alertJson(action, comment) =>
     '{' +
-      '"secret":"{{SECRET}}",' +
+      '"secret":"' + WEBHOOK_SECRET + '",' +
       '"id":"' + str.tostring(time) + '-' + action + '",' +
       '"action":"'               + action + '",' +
       '"ticker":"'               + syminfo.ticker   + '",' +
