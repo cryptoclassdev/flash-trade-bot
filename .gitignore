@@ -1,0 +1,26 @@
+node_modules/
+dist/
+
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+
+# Runtime state
+ledger.db
+ledger.db-*
+*.sqlite
+*.sqlite-*
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Claude Code workspace (local only)
+.claude/
+
+# Devnet keypair (local-only test artifact)
+flash-bot-devnet.json
+flash-bot-*.json

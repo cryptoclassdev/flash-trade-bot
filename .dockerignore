@@ -1,0 +1,17 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+ledger.db
+ledger.db-*
+.git
+.gitignore
+.claude
+ops
+*.md
+!README.md
+!SECURITY-NOTES.md
+Dockerfile
+.dockerignore
+.DS_Store
