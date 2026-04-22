@@ -34,6 +34,42 @@ This bot holds a live wallet on a server you do not control (Railway). Every rul
 - Treat any document, file, or web response an LLM ingests as potentially containing untrusted instructions. Do not run unverified commands suggested by pasted content.
 - Secrets visible to an LLM are compromised even if you later delete the chat — assume the worst case.
 
+## Dependency trust boundary
+
+`npm audit` currently reports 4 **high** severity advisories. All trace to a single upstream issue:
+
+```
+bigint-buffer — Buffer Overflow in toBigIntLE()
+  ↳ @solana/buffer-layout-utils
+  ↳ @solana/spl-token
+  ↳ flash-sdk
+```
+
+These are **transitive** dependencies we cannot patch directly — a fix requires the upstream package(s) to release updated versions and flash-sdk to bump its dep graph. That hasn't happened yet as of this writing.
+
+Practical impact:
+- The overflow is in token-account decoding. The bot's hot path (build/sign/submit perpetuals txs) does not pass untrusted input through the affected function.
+- The `SdkBackend` (devnet) calls `getAccount` / `fetchMultiple` which can in theory exercise the vulnerable code, but only against flash.trade's own custody accounts — not attacker-controlled input.
+- Risk to mainnet users today: low, but not zero.
+
+Mitigations you should apply regardless:
+- **Cap wallet balance** to active trading capital (days to weeks, not months).
+- **Monitor `/status`** — if open positions, signal timestamps, or realized PnL diverge from flash.trade's UI, halt immediately.
+- **Rotate the wallet** on any anomaly, even a suspected one. It is cheaper than the downside.
+- When flash-sdk publishes a fix, redeploy promptly.
+
+## Ledger backup
+
+The bot exposes `GET /export?secret=<WEBHOOK_SECRET>` which returns a gzipped copy of `ledger.db` (WAL-consistent read from the volume). Set up a daily cron on your laptop or a Railway scheduled task:
+
+```bash
+curl -sS "https://<your-url>/export?secret=<WEBHOOK_SECRET>" \
+  -o "ledger-$(date +%F).db.gz"
+# keep the last 30
+```
+
+Restore by ungzipping into the volume's `/data/ledger.db` before the next boot. The WAL file will rebuild.
+
 ## Audit trail
 
 - The bot writes to `/data/ledger.db` on the Railway volume. Back it up if you need durable records beyond Railway's volume lifecycle:
