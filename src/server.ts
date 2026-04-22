@@ -1,7 +1,11 @@
-import express, { Request, Response, NextFunction } from "express";
+import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import { Connection } from "@solana/web3.js";
 import axios from "axios";
+import { createGzip } from "zlib";
+import path from "path";
+import { createReadStream, existsSync } from "fs";
+import { constantTimeEqual } from "./verify";
 import { loadConfig, AppConfig } from "./config";
 import { validatePayload } from "./verify";
 import {
@@ -152,6 +156,36 @@ async function main(): Promise<void> {
         max_daily_loss_usdc: cfg.maxDailyLossUsdc,
       },
     });
+  });
+
+  // GET /export?secret=<WEBHOOK_SECRET>
+  // Streams a gzipped copy of the ledger.db file for off-site backup.
+  // Same constant-time secret check as /webhook. Rate-limited by the same
+  // bucket IPs don't get free enumeration of the URL.
+  app.get("/export", webhookLimiter, (req: Request, res: Response) => {
+    const secret = typeof req.query.secret === "string" ? req.query.secret : "";
+    if (!secret || !constantTimeEqual(secret, cfg.webhookSecret)) {
+      res.status(401).json({ error: "invalid secret" });
+      return;
+    }
+    const dbPath = process.env.DB_PATH || path.join(process.cwd(), "ledger.db");
+    if (!existsSync(dbPath)) {
+      res.status(404).json({ error: "ledger not found" });
+      return;
+    }
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    res.setHeader("Content-Type", "application/gzip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="ledger-${cfg.walletPubkey.slice(0, 8)}-${ts}.db.gz"`
+    );
+    createReadStream(dbPath)
+      .on("error", (e) => {
+        console.error(`[export] stream error: ${e.message}`);
+        if (!res.headersSent) res.status(500).end();
+      })
+      .pipe(createGzip())
+      .pipe(res);
   });
 
   app.post("/webhook", webhookLimiter, async (req: Request, res: Response) => {
