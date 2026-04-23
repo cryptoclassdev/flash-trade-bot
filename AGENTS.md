@@ -2,12 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) and Cursor IDE (https://cursor.com) when working with code in this repository.
 
+## Product source of truth — read before product-shaping changes
+
+**`PRD.md` is the canonical product specification.** It defines what we are building (Level 3: Telegram-native, non-custodial, managed trading product), for whom, and under what constraints.
+
+Before making any change that touches:
+- user-facing features or flows
+- the trust / custody / security model
+- the strategy library
+- supported markets or chains
+- pricing or billing
+- the target user persona
+- success metrics or release criteria
+- anything moving in or out of scope
+
+…read `PRD.md` end to end. If your change diverges from what is written there, propose an update to `PRD.md` *first*, then implement. See [`PRD.md` Section 13 — Change control](./PRD.md#13-change-control).
+
+Bug fixes, refactors, performance improvements, internal architecture choices, and infrastructure tuning do NOT require PRD updates. Use your judgment.
+
+Companion documents:
+- `LEVEL3-PLAN.md` — strategic plan and 90-day roadmap. How we get to what the PRD specifies.
+- `SECURITY-NOTES.md` — trust boundary documentation. Update when security model changes.
+- `DISCLAIMER.md` — user-facing risk disclosure. Update when risk surface changes.
+- `tradingview-strategy.pine` — reference implementation of the RSI Divergence strategy. The TypeScript port must produce byte-identical signals.
+
 ## Orientation
 
 - Directory name is `rsi-divergence-bot`; the package itself is `flash-trade-bot`. Same code, legacy naming.
-- This is a **live-money trading bot**. It takes TradingView webhook signals and opens/closes/flips perpetuals on flash.trade (Solana mainnet). Treat every change as production-critical.
-- Read `SECURITY-NOTES.md` before touching anything related to `.env`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, the Cloudflare tunnel, or wallet handling.
-- There is **no test suite**. `scripts/dry-run.ts` is the closest thing — it hits the real mainnet transaction-builder API with `DRY_RUN_ONLY=true` and asserts response shape without signing.
+- This is a **live-money trading bot**. Current codebase is the v0 Railway template. The target product (per `PRD.md`) is a Telegram-native Level 3 service; this codebase will evolve toward that.
+- Treat every change as production-critical. Users deploy real money against this code.
+- Read `SECURITY-NOTES.md` before touching anything related to `.env`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, or wallet handling.
+- Tests live in `tests/*.test.ts` run via `npm test`. `scripts/dry-run.ts` additionally hits the real mainnet transaction-builder API to validate the `ApiBackend` shape without signing.
 
 ## Commands
 
