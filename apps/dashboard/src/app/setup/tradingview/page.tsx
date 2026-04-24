@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { WizardLayout } from "@/components/WizardLayout";
 import { CopyButton } from "@/components/CopyButton";
 import { readWizardState, writeWizardState } from "@/lib/storage";
+import { track } from "@/lib/analytics";
 
 export default function TradingViewPage() {
   const router = useRouter();
@@ -33,6 +34,8 @@ export default function TradingViewPage() {
 
   function onFinish() {
     if (!confirmed) return;
+    track("setup.tradingview.confirmed");
+    track("setup.completed");
     writeWizardState({
       tradingviewConfirmed: true,
       completedAt: Date.now(),

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { WizardLayout } from "@/components/WizardLayout";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { STRATEGY_DEFAULTS, type StrategyConfig } from "shared";
+import { track } from "@/lib/analytics";
 
 export default function StrategyPage() {
   const router = useRouter();
@@ -24,6 +25,10 @@ export default function StrategyPage() {
   }
 
   function onContinue() {
+    track("setup.strategy.configured", {
+      leverage: config.LEVERAGE,
+      collateralUsdc: config.COLLATERAL_USDC,
+    });
     writeWizardState({ strategy: config });
     router.push("/setup/deploy");
   }

@@ -1,8 +1,10 @@
 import Link from "next/link";
+import { TrackMount } from "@/components/TrackMount";
 
 export default function LandingPage() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-3xl flex-col px-6 py-16 sm:py-24">
+      <TrackMount event="dashboard.landed" />
       <header className="mb-16 flex items-center justify-between">
         <div className="font-mono text-sm text-fg-muted">flash-trade-bot</div>
         <nav className="flex gap-6 text-sm text-fg-muted">

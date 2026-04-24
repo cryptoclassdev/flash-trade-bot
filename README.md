@@ -2,7 +2,9 @@
 
 Automated perpetuals trading bot that takes TradingView strategy alerts and executes them on [flash.trade](https://flash.trade) (Solana mainnet).
 
-Deploy it to Railway in about 10 minutes. One wallet per deploy.
+**Easiest path: [flashtradebot.xyz](https://flashtradebot.xyz)** — the guided setup dashboard generates a wallet, walks you through Helius + BotFather + Railway, and pre-fills every env var. ~30 min, zero CLI.
+
+Advanced path (fork + deploy manually): keep reading below.
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?referralCode=)
 
@@ -289,7 +291,12 @@ rm /data/ledger.db /data/ledger.db-shm /data/ledger.db-wal
 
 Node 20 required (`better-sqlite3` prebuilt binaries). Use nvm: `nvm use 20`.
 
-This repo is a [Turborepo](https://turborepo.com) monorepo. The trading bot lives in `apps/webhook-server/`. Future Telegram bot + Mini App will live in `apps/bot/` and `apps/mini-app/`. All commands below run from the repo root and delegate to turbo.
+This repo is a [Turborepo](https://turborepo.com) monorepo:
+- `apps/webhook-server/` — the trading bot (Express + Solana + flash.trade)
+- `apps/dashboard/` — Next.js 15 guided-setup + status UI deployed at `flashtradebot.xyz`
+- `packages/shared/` — types and helpers used by both (StatusResponse, env schema, Pine generator)
+
+All commands below run from the repo root and delegate to turbo.
 
 ```bash
 npm install

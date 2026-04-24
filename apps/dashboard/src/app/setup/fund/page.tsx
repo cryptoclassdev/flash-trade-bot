@@ -8,6 +8,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { getWalletBalance, type WalletBalance } from "@/lib/rpc";
 import { buildSolanaPayUrl } from "@/lib/solana-pay";
+import { track } from "@/lib/analytics";
 
 const MIN_USDC = 50;
 const MIN_SOL = 0.05;
@@ -55,6 +56,7 @@ export default function FundPage() {
   }, [autoPoll, pubkey]);
 
   function onContinue() {
+    track("setup.funded", { funded: !!funded });
     writeWizardState({ walletFunded: true });
     router.push("/setup/rpc");
   }

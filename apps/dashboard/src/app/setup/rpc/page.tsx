@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { WizardLayout } from "@/components/WizardLayout";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { validateRpcEndpoint } from "@/lib/rpc";
+import { track } from "@/lib/analytics";
 
 export default function RpcPage() {
   const router = useRouter();
@@ -29,9 +30,11 @@ export default function RpcPage() {
       const slot = await validateRpcEndpoint(rpcUrl.trim());
       setStatus("ok");
       setMessage(`Connected. Current slot: ${slot.toLocaleString()}.`);
+      track("setup.rpc.validated");
     } catch (e) {
       setStatus("fail");
       setMessage(e instanceof Error ? e.message : "RPC test failed");
+      track("error.rpc.test_failed");
     }
   }
 
