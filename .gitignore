@@ -2,6 +2,14 @@ node_modules/
 dist/
 .turbo/
 
+# Next.js
+.next/
+out/
+*.tsbuildinfo
+
+# Bundled dashboard output — generated at Docker build time
+apps/webhook-server/public/
+
 # Secrets — NEVER commit
 .env
 .env.local

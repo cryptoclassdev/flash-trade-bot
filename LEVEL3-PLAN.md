@@ -1,6 +1,8 @@
 # Level 3 Plan — flash-trade-bot as a fully managed Telegram-native trading product
 
-**Status:** Strategic plan. Not yet approved to build.
+> **SUPERSEDED for now — 2026-04-24.** We are first executing `DASHBOARD-PLAN.md` (guided self-host dashboard) to validate demand at the self-host tier. This Level 3 plan is preserved as the reference implementation for if/when we pivot to managed mode per the dashboard success criterion (see `DASHBOARD-PLAN.md` §12 and `PRD.md` v2.0 change-log entry). **Do not execute against this plan without a PRD revision.**
+
+**Status:** Deferred. Reference implementation plan for the managed Telegram-native product. Active only if dashboard validation fails or succeeds past the 1000-user threshold (see `DASHBOARD-PLAN.md` §12).
 **Author:** Planning artifact, drafted 2026-04-24.
 **Guides applied:** Karpathy-style engineering (baseline first, evals before sophistication, measure everything, adversarial thinking for failures); `telegram-bot-builder` and `telegram-mini-app` skills.
 
