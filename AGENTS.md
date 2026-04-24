@@ -29,10 +29,11 @@ Companion documents:
 ## Orientation
 
 - Directory name is `rsi-divergence-bot`; the package itself is `flash-trade-bot`. Same code, legacy naming.
+- This is a **Turborepo monorepo**. Today it has one app: `apps/webhook-server/` (the trading bot). Level 3 adds `apps/bot/` (grammY Telegram bot), `apps/mini-app/` (Next.js Mini App), and shared `packages/` (strategy engine, types). Root `package.json` only carries `turbo` — all runtime deps live in each app's own `package.json`. Pine strategy lives at repo root (`tradingview-strategy.pine`) because it is a cross-cutting asset.
 - This is a **live-money trading bot**. Current codebase is the v0 Railway template. The target product (per `PRD.md`) is a Telegram-native Level 3 service; this codebase will evolve toward that.
 - Treat every change as production-critical. Users deploy real money against this code.
 - Read `SECURITY-NOTES.md` before touching anything related to `.env`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, or wallet handling.
-- Tests live in `tests/*.test.ts` run via `npm test`. `scripts/dry-run.ts` additionally hits the real mainnet transaction-builder API to validate the `ApiBackend` shape without signing.
+- Tests live in `apps/webhook-server/tests/*.test.ts` run via `npm test` (turbo). `apps/webhook-server/scripts/dry-run.ts` additionally hits the real mainnet transaction-builder API to validate the `ApiBackend` shape without signing.
 
 ## Commands
 
@@ -72,7 +73,7 @@ TradingView alert (Pine) → POST /webhook
 
 `server.ts` binds `127.0.0.1` only — exposure to the public internet is the Cloudflare tunnel's job. Never change the bind address without also changing the deploy topology.
 
-### Intent derivation (`src/executor.ts:deriveIntent`)
+### Intent derivation (`apps/webhook-server/src/executor.ts:deriveIntent`)
 
 The bot is driven by TradingView's `prev_market_position` + `market_position` fields, **not** `action`:
 
@@ -83,9 +84,9 @@ The bot is driven by TradingView's `prev_market_position` + `market_position` fi
 
 The `action` field (buy/sell) is validated but not used for dispatch. This matters because a TradingView "sell" on an already-flat position is a noop, not a short.
 
-### Flash backends (`src/flash.ts`)
+### Flash backends (`apps/webhook-server/src/flash.ts`)
 
-Two implementations behind `FlashBackend` (`src/types.ts`):
+Two implementations behind `FlashBackend` (`apps/webhook-server/src/types.ts`):
 
 - **`ApiBackend`** — mainnet. Calls `https://flashapi.trade/transaction-builder/{open,close,reverse}-position`, receives a base64 `VersionedTransaction`, signs locally, broadcasts via the configured `RPC_URL_MAINNET`. This is the production path.
 - **`SdkBackend`** — devnet only, via `flash-sdk` driving the chain directly. **Dormant**: flash.trade's devnet program is decommissioned and will fail with `UnsupportedProgramId`. `server.ts` prints a warning at boot if `NETWORK=devnet`. Keep the code — it's the reference for how to build flash.trade transactions without the HTTP API.
@@ -101,9 +102,9 @@ Two implementations behind `FlashBackend` (`src/types.ts`):
 3. `ApiBackend.requireLiveWallet(...)` throws if anything downstream tries to sign with a null keypair.
 4. `server.ts` refuses to start in dry-run mode — it's a script-only mode. Webhook processing needs a live wallet.
 
-`scripts/dry-run.ts` hard-pins `DRY_RUN_ONLY=true` and `NETWORK=mainnet-beta` before importing config, then re-applies after `dotenv.config()` so `.env` cannot override.
+`apps/webhook-server/scripts/dry-run.ts` hard-pins `DRY_RUN_ONLY=true` and `NETWORK=mainnet-beta` before importing config, then re-applies after `dotenv.config()` so `.env` cannot override.
 
-### Retry policy (`src/retry.ts`)
+### Retry policy (`apps/webhook-server/src/retry.ts`)
 
 `withRetry` classifies each failure by regex against the error message:
 
@@ -114,7 +115,7 @@ Two implementations behind `FlashBackend` (`src/types.ts`):
 
 The retry loop assumes the action closure is idempotent from the wallet's perspective (i.e. re-submitting a rebuilt tx for a dropped signal is safe). The ledger writes one `trades` row per attempt, so every retry is auditable.
 
-### Halt mechanism (`src/halt.ts`)
+### Halt mechanism (`apps/webhook-server/src/halt.ts`)
 
 Halt state lives in the `bot_state` SQLite table (`halted`, `halt_reason`). It **persists across restarts**. Semantics:
 
@@ -123,7 +124,7 @@ Halt state lives in the `bot_state` SQLite table (`halted`, `halt_reason`). It *
 - `checkDailyLossLimit` runs after every close and halts if `realized_pnl_usd` since UTC midnight ≤ `-MAX_DAILY_LOSS_USDC`.
 - Clear with `RESUME=true` env var at boot (one-shot), or direct DB edit — see README "Clear the halt flag".
 
-### Ledger schema (`src/ledger.ts`)
+### Ledger schema (`apps/webhook-server/src/ledger.ts`)
 
 SQLite file `ledger.db` in the process CWD. Tables:
 
