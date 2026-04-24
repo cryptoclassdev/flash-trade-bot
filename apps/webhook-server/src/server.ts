@@ -19,8 +19,9 @@ import {
 import { initTelegram, tg } from "./telegram";
 import { execute } from "./executor";
 import { pickBackend } from "./flash";
-import { isHalted, haltReason, clearHalt } from "./halt";
+import { isHalted, haltReason, halt, clearHalt } from "./halt";
 import { track, drain } from "./shutdown";
+import type { StatusResponse } from "shared";
 
 /**
  * Emergency Telegram alert before any other init. Used when loadConfig() throws:
@@ -89,6 +90,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (cfg.setupMode) {
+    console.log(
+      "\n" +
+      "=============================================================\n" +
+      "  SETUP_MODE=true — bot is serving the dashboard only.\n" +
+      "  Trading is disabled until you fill env vars and unset\n" +
+      "  SETUP_MODE. See your Railway domain in a browser.\n" +
+      "=============================================================\n"
+    );
+  }
+
   if (cfg.network === "devnet") {
     console.warn(
       "\n" +
@@ -101,17 +113,20 @@ async function main(): Promise<void> {
     );
   }
 
-  initTelegram(cfg);
-
-  for (const w of preflight(cfg)) console.warn(w);
-
-  if (cfg.resumeOnBoot) {
-    clearHalt();
-    console.log("[boot] RESUME=true — cleared halt state");
+  if (!cfg.setupMode) {
+    initTelegram(cfg);
+    for (const w of preflight(cfg)) console.warn(w);
+    if (cfg.resumeOnBoot) {
+      clearHalt();
+      console.log("[boot] RESUME=true — cleared halt state");
+    }
   }
 
-  const conn = new Connection(cfg.rpcUrl, "confirmed");
-  const backend = pickBackend(cfg);
+  // In setup mode, rpcUrl is empty. Use public mainnet as a safe default for
+  // the Connection object; it's not used server-side until trading is enabled.
+  const effectiveRpc = cfg.rpcUrl || "https://api.mainnet-beta.solana.com";
+  const conn = new Connection(effectiveRpc, "confirmed");
+  const backend = cfg.setupMode ? null : pickBackend(cfg);
 
   const app = express();
   app.set("trust proxy", 1); // Railway terminates TLS upstream; trust X-Forwarded-For for rate limit keying
@@ -135,28 +150,213 @@ async function main(): Promise<void> {
       wallet: cfg.walletPubkey,
       halted: isHalted(),
       halt_reason: haltReason() || undefined,
+      setup_mode: cfg.setupMode,
     });
   });
 
-  app.get("/status", (_req: Request, res: Response) => {
+  // Dashboard self-introspection. No auth required — it only reveals which
+  // env vars are missing and whether the bot needs configuration. Used by the
+  // bundled dashboard to render "setup still pending" vs "ready to trade".
+  app.get("/api/setup-info", (_req: Request, res: Response) => {
+    const missing: string[] = [];
+    if (!cfg.setupMode) {
+      // Normal mode — nothing missing because loadConfig would have thrown.
+    } else {
+      if (!process.env.RPC_URL_MAINNET) missing.push("RPC_URL_MAINNET");
+      if (!process.env.PRIVATE_KEY) missing.push("PRIVATE_KEY");
+      if (!process.env.WEBHOOK_SECRET) missing.push("WEBHOOK_SECRET");
+      if (!process.env.TELEGRAM_BOT_TOKEN) missing.push("TELEGRAM_BOT_TOKEN");
+      if (!process.env.TELEGRAM_CHAT_ID) missing.push("TELEGRAM_CHAT_ID");
+    }
     res.json({
+      setupMode: cfg.setupMode,
       network: cfg.network,
-      wallet: cfg.walletPubkey,
-      halted: isHalted(),
-      halt_reason: haltReason() || undefined,
-      open_positions: openPositions(),
-      last_signal_received_at: lastSignalReceivedAt(),
-      realized_pnl_today_usdc: realizedPnlSinceUtcMidnight(),
-      trading_params: {
-        asset: cfg.asset,
-        collateral_usdc: cfg.collateralUsdc,
-        leverage: cfg.leverage,
-        slippage_entry_bps: cfg.slippageEntryBps,
-        slippage_exit_bps: cfg.slippageExitBps,
-        max_daily_loss_usdc: cfg.maxDailyLossUsdc,
-      },
+      walletPubkey: cfg.setupMode ? null : cfg.walletPubkey,
+      missingEnv: missing,
+      webhookUrl: `${_req.protocol}://${_req.get("host")}/webhook`,
     });
   });
+
+  // Serve the generator Pine file as a static asset. Dashboard reads it,
+  // injects the user's WEBHOOK_SECRET client-side, triggers a blob download.
+  app.get("/pine-source", (_req: Request, res: Response) => {
+    const possiblePaths = [
+      path.join(process.cwd(), "tradingview-strategy.pine"),
+      path.join(__dirname, "..", "..", "..", "tradingview-strategy.pine"),
+      path.join(__dirname, "..", "tradingview-strategy.pine"),
+    ];
+    const found = possiblePaths.find((p) => existsSync(p));
+    if (!found) {
+      res.status(500).json({ error: "Pine source not found in image" });
+      return;
+    }
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    createReadStream(found)
+      .on("error", () => {
+        if (!res.headersSent) res.status(500).end();
+      })
+      .pipe(res);
+  });
+
+  // CORS for dashboard-originated requests (/status, /pause, /resume).
+  // Default allowlist: the public dashboard + localhost dev. Override with DASHBOARD_ORIGIN.
+  const DEFAULT_DASHBOARD_ORIGINS = [
+    "https://flashtradebot.xyz",
+    "https://www.flashtradebot.xyz",
+    "http://localhost:3001",
+  ];
+  const allowedOrigins = cfg.dashboardOrigin
+    ? cfg.dashboardOrigin.split(",").map((s) => s.trim()).filter(Boolean)
+    : DEFAULT_DASHBOARD_ORIGINS;
+
+  const corsForDashboard = (req: Request, res: Response, next: () => void) => {
+    const origin = req.headers.origin || "";
+    if (allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
+      res.setHeader("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  };
+
+  // If DASHBOARD_TOKEN is set, require `Authorization: Bearer <token>` on
+  // /status, /pause, /resume. Otherwise (v0-style deploys without the dashboard
+  // setup), these endpoints stay open for backward compat.
+  const requireDashboardAuth = (req: Request, res: Response, next: () => void) => {
+    if (!cfg.dashboardToken) {
+      next();
+      return;
+    }
+    const auth = req.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!token || !constantTimeEqual(token, cfg.dashboardToken)) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    next();
+  };
+
+  app.get("/status", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+    // Wallet balance lookup from the configured RPC. Non-fatal if it fails —
+    // dashboard can still render the rest.
+    let solBalance = 0;
+    let usdcBalance = 0;
+    try {
+      const { PublicKey, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
+      const owner = new PublicKey(cfg.walletPubkey);
+      const [lamports, tokenResp] = await Promise.all([
+        conn.getBalance(owner),
+        conn.getParsedTokenAccountsByOwner(owner, {
+          mint: new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+        }),
+      ]);
+      solBalance = lamports / LAMPORTS_PER_SOL;
+      usdcBalance = tokenResp.value.reduce((t, a) => {
+        const ui = a.account.data.parsed?.info?.tokenAmount?.uiAmount;
+        return t + (typeof ui === "number" ? ui : 0);
+      }, 0);
+    } catch (e) {
+      console.warn(`[status] balance lookup failed: ${(e as Error).message}`);
+    }
+
+    const halted = isHalted();
+    const response: StatusResponse = {
+      network: cfg.network,
+      walletPubkey: cfg.walletPubkey,
+      walletSolBalance: solBalance,
+      walletUsdcBalance: usdcBalance,
+      halt: halted
+        ? { halted: true, reason: haltReason(), since: 0 }
+        : { halted: false },
+      openPositions: openPositions().map((p: any) => ({
+        positionKey: p.id || p.positionKey || "",
+        side: (p.side || "long") as "long" | "short",
+        asset: p.asset || cfg.asset,
+        sizeUsd: Number(p.size_usd ?? p.sizeUsd ?? 0),
+        collateralUsd: Number(p.collateral_usd ?? p.collateralUsd ?? 0),
+        entryPrice: Number(p.entry_price ?? p.entryPrice ?? 0),
+        leverage: Number(p.leverage ?? cfg.leverage),
+        openedAt: Number(p.opened_at ?? p.openedAt ?? 0),
+        unrealizedPnlUsd: null,
+      })),
+      lastSignalReceivedAt: lastSignalReceivedAt(),
+      realizedPnlTodayUsd: realizedPnlSinceUtcMidnight(),
+      tradesTodayCount: 0,
+      tradingParams: {
+        asset: cfg.asset,
+        collateralUsdc: cfg.collateralUsdc,
+        leverage: cfg.leverage,
+        slippageEntryBps: cfg.slippageEntryBps,
+        slippageExitBps: cfg.slippageExitBps,
+        maxDailyLossUsdc: cfg.maxDailyLossUsdc,
+      },
+      serverTime: Date.now(),
+    };
+    res.json(response);
+  });
+
+  // Dashboard-initiated pause. Halts new OPENS only; closes still flow through.
+  app.post("/pause", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+    if (cfg.setupMode) {
+      res.status(503).json({ error: "setup_incomplete" });
+      return;
+    }
+    if (isHalted()) {
+      res.json({ ok: true, already: "halted", reason: haltReason() });
+      return;
+    }
+    await halt("Paused via dashboard");
+    res.json({ ok: true });
+  });
+
+  app.post("/resume", corsForDashboard, requireDashboardAuth, (_req: Request, res: Response) => {
+    if (cfg.setupMode) {
+      res.status(503).json({ error: "setup_incomplete" });
+      return;
+    }
+    clearHalt();
+    res.json({ ok: true });
+  });
+
+  // Preflight OPTIONS stay for the unlikely case a user self-hosts the
+  // dashboard on a different origin. Same-origin deploys never hit these.
+  app.options("/status", corsForDashboard);
+  app.options("/pause", corsForDashboard);
+  app.options("/resume", corsForDashboard);
+
+  // Serve the bundled dashboard. In production the Dockerfile copies the
+  // Next.js static export into ./public/dashboard. In local dev the dir may
+  // not exist; we skip silently so the API-only workflow still works.
+  const DASHBOARD_DIR = path.join(__dirname, "..", "public", "dashboard");
+  if (existsSync(DASHBOARD_DIR)) {
+    app.use(express.static(DASHBOARD_DIR, { extensions: ["html"] }));
+    // SPA fallback: any non-API route returns the closest index.html. Next.js
+    // static export puts one per route dir, so we prefer exact route matches
+    // and only fall through to / when nothing else hits.
+    app.get(/^\/(?!api\/|webhook|pause|resume|health|status|export|pine-source).*/,
+      (req: Request, res: Response, next: () => void) => {
+        const candidate = path.join(DASHBOARD_DIR, req.path, "index.html");
+        if (existsSync(candidate)) {
+          res.sendFile(candidate);
+          return;
+        }
+        const root = path.join(DASHBOARD_DIR, "index.html");
+        if (existsSync(root)) {
+          res.sendFile(root);
+          return;
+        }
+        next();
+      }
+    );
+    console.log(`[boot] dashboard bundled — serving from ${DASHBOARD_DIR}`);
+  } else {
+    console.log(`[boot] dashboard not bundled (dir missing: ${DASHBOARD_DIR}) — API-only mode`);
+  }
 
   // GET /export?secret=<WEBHOOK_SECRET>
   // Streams a gzipped copy of the ledger.db file for off-site backup.
@@ -189,6 +389,13 @@ async function main(): Promise<void> {
   });
 
   app.post("/webhook", webhookLimiter, async (req: Request, res: Response) => {
+    if (cfg.setupMode) {
+      res.status(503).json({
+        error: "setup_incomplete",
+        message: "SETUP_MODE=true. Finish configuration in the dashboard, then unset SETUP_MODE on Railway.",
+      });
+      return;
+    }
     const result = validatePayload(req.body, cfg.webhookSecret);
     if (!result.ok) {
       console.warn(`[webhook] rejected: ${result.message}`);
@@ -210,7 +417,7 @@ async function main(): Promise<void> {
 
     // Track in-flight so graceful shutdown can wait for it
     track(
-      execute(signal, { cfg, backend, conn }).catch(async (e) => {
+      execute(signal, { cfg, backend: backend!, conn }).catch(async (e) => {
         console.error(`[executor] uncaught on signal=${signal.id}:`, e);
         await tg.failed(1, e?.message || String(e)).catch(() => {});
       })

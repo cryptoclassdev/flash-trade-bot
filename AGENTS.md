@@ -21,16 +21,17 @@ Before making any change that touches:
 Bug fixes, refactors, performance improvements, internal architecture choices, and infrastructure tuning do NOT require PRD updates. Use your judgment.
 
 Companion documents:
-- `LEVEL3-PLAN.md` — strategic plan and 90-day roadmap. How we get to what the PRD specifies.
+- `DASHBOARD-PLAN.md` — **operationally active as of 2026-04-24**. Describes the guided self-host dashboard currently being built in `apps/dashboard/`. Read this before touching the dashboard, Railway template flow, or TradingView onboarding. Includes the 200-signups-in-30-days success criterion that gates whether we continue with self-host or pivot to managed.
+- `LEVEL3-PLAN.md` — **superseded for now**. Reference implementation plan for the Level 3 managed Telegram-native product. Only relevant if we pivot per `DASHBOARD-PLAN.md` §12.
 - `SECURITY-NOTES.md` — trust boundary documentation. Update when security model changes.
 - `DISCLAIMER.md` — user-facing risk disclosure. Update when risk surface changes.
-- `tradingview-strategy.pine` — reference implementation of the RSI Divergence strategy. The TypeScript port must produce byte-identical signals.
+- `tradingview-strategy.pine` — reference implementation of the RSI Divergence strategy.
 
 ## Orientation
 
 - Directory name is `rsi-divergence-bot`; the package itself is `flash-trade-bot`. Same code, legacy naming.
-- This is a **Turborepo monorepo**. Today it has one app: `apps/webhook-server/` (the trading bot). Level 3 adds `apps/bot/` (grammY Telegram bot), `apps/mini-app/` (Next.js Mini App), and shared `packages/` (strategy engine, types). Root `package.json` only carries `turbo` — all runtime deps live in each app's own `package.json`. Pine strategy lives at repo root (`tradingview-strategy.pine`) because it is a cross-cutting asset.
-- This is a **live-money trading bot**. Current codebase is the v0 Railway template. The target product (per `PRD.md`) is a Telegram-native Level 3 service; this codebase will evolve toward that.
+- This is a **Turborepo monorepo**. Today: `apps/webhook-server/` (the trading bot). In flight per `DASHBOARD-PLAN.md`: `apps/dashboard/` (Next.js 14 on Vercel) + `packages/shared/` (Pine generator, env schema, status types). Root `package.json` only carries `turbo` — all runtime deps live in each app's own `package.json`. Pine strategy lives at repo root (`tradingview-strategy.pine`) because it is a cross-cutting asset.
+- This is a **live-money trading bot**. Current codebase is the v0 Railway template with the in-flight dashboard layer. Per `PRD.md` v2.0, the execution direction is self-host + guided dashboard (not Level 3 managed — that's deferred pending dashboard validation).
 - Treat every change as production-critical. Users deploy real money against this code.
 - Read `SECURITY-NOTES.md` before touching anything related to `.env`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, or wallet handling.
 - Tests live in `apps/webhook-server/tests/*.test.ts` run via `npm test` (turbo). `apps/webhook-server/scripts/dry-run.ts` additionally hits the real mainnet transaction-builder API to validate the `ApiBackend` shape without signing.
