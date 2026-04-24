@@ -19,8 +19,9 @@ import {
 import { initTelegram, tg } from "./telegram";
 import { execute } from "./executor";
 import { pickBackend } from "./flash";
-import { isHalted, haltReason, clearHalt } from "./halt";
+import { isHalted, haltReason, halt, clearHalt } from "./halt";
 import { track, drain } from "./shutdown";
+import type { StatusResponse } from "shared";
 
 /**
  * Emergency Telegram alert before any other init. Used when loadConfig() throws:
@@ -138,25 +139,127 @@ async function main(): Promise<void> {
     });
   });
 
-  app.get("/status", (_req: Request, res: Response) => {
-    res.json({
+  // CORS for dashboard-originated requests (/status, /pause, /resume).
+  // Default allowlist: the public dashboard + localhost dev. Override with DASHBOARD_ORIGIN.
+  const DEFAULT_DASHBOARD_ORIGINS = [
+    "https://flashtradebot.xyz",
+    "https://www.flashtradebot.xyz",
+    "http://localhost:3001",
+  ];
+  const allowedOrigins = cfg.dashboardOrigin
+    ? cfg.dashboardOrigin.split(",").map((s) => s.trim()).filter(Boolean)
+    : DEFAULT_DASHBOARD_ORIGINS;
+
+  const corsForDashboard = (req: Request, res: Response, next: () => void) => {
+    const origin = req.headers.origin || "";
+    if (allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
+      res.setHeader("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  };
+
+  // If DASHBOARD_TOKEN is set, require `Authorization: Bearer <token>` on
+  // /status, /pause, /resume. Otherwise (v0-style deploys without the dashboard
+  // setup), these endpoints stay open for backward compat.
+  const requireDashboardAuth = (req: Request, res: Response, next: () => void) => {
+    if (!cfg.dashboardToken) {
+      next();
+      return;
+    }
+    const auth = req.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!token || !constantTimeEqual(token, cfg.dashboardToken)) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    next();
+  };
+
+  app.get("/status", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+    // Wallet balance lookup from the configured RPC. Non-fatal if it fails —
+    // dashboard can still render the rest.
+    let solBalance = 0;
+    let usdcBalance = 0;
+    try {
+      const { PublicKey, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
+      const owner = new PublicKey(cfg.walletPubkey);
+      const [lamports, tokenResp] = await Promise.all([
+        conn.getBalance(owner),
+        conn.getParsedTokenAccountsByOwner(owner, {
+          mint: new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+        }),
+      ]);
+      solBalance = lamports / LAMPORTS_PER_SOL;
+      usdcBalance = tokenResp.value.reduce((t, a) => {
+        const ui = a.account.data.parsed?.info?.tokenAmount?.uiAmount;
+        return t + (typeof ui === "number" ? ui : 0);
+      }, 0);
+    } catch (e) {
+      console.warn(`[status] balance lookup failed: ${(e as Error).message}`);
+    }
+
+    const halted = isHalted();
+    const response: StatusResponse = {
       network: cfg.network,
-      wallet: cfg.walletPubkey,
-      halted: isHalted(),
-      halt_reason: haltReason() || undefined,
-      open_positions: openPositions(),
-      last_signal_received_at: lastSignalReceivedAt(),
-      realized_pnl_today_usdc: realizedPnlSinceUtcMidnight(),
-      trading_params: {
+      walletPubkey: cfg.walletPubkey,
+      walletSolBalance: solBalance,
+      walletUsdcBalance: usdcBalance,
+      halt: halted
+        ? { halted: true, reason: haltReason(), since: 0 }
+        : { halted: false },
+      openPositions: openPositions().map((p: any) => ({
+        positionKey: p.id || p.positionKey || "",
+        side: (p.side || "long") as "long" | "short",
+        asset: p.asset || cfg.asset,
+        sizeUsd: Number(p.size_usd ?? p.sizeUsd ?? 0),
+        collateralUsd: Number(p.collateral_usd ?? p.collateralUsd ?? 0),
+        entryPrice: Number(p.entry_price ?? p.entryPrice ?? 0),
+        leverage: Number(p.leverage ?? cfg.leverage),
+        openedAt: Number(p.opened_at ?? p.openedAt ?? 0),
+        unrealizedPnlUsd: null,
+      })),
+      lastSignalReceivedAt: lastSignalReceivedAt(),
+      realizedPnlTodayUsd: realizedPnlSinceUtcMidnight(),
+      tradesTodayCount: 0,
+      tradingParams: {
         asset: cfg.asset,
-        collateral_usdc: cfg.collateralUsdc,
+        collateralUsdc: cfg.collateralUsdc,
         leverage: cfg.leverage,
-        slippage_entry_bps: cfg.slippageEntryBps,
-        slippage_exit_bps: cfg.slippageExitBps,
-        max_daily_loss_usdc: cfg.maxDailyLossUsdc,
+        slippageEntryBps: cfg.slippageEntryBps,
+        slippageExitBps: cfg.slippageExitBps,
+        maxDailyLossUsdc: cfg.maxDailyLossUsdc,
       },
-    });
+      serverTime: Date.now(),
+    };
+    res.json(response);
   });
+
+  // Dashboard-initiated pause. Halts new OPENS only; closes still flow through.
+  app.post("/pause", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+    if (isHalted()) {
+      res.json({ ok: true, already: "halted", reason: haltReason() });
+      return;
+    }
+    await halt("Paused via dashboard");
+    res.json({ ok: true });
+  });
+
+  app.post("/resume", corsForDashboard, requireDashboardAuth, (_req: Request, res: Response) => {
+    clearHalt();
+    res.json({ ok: true });
+  });
+
+  // Always respond to preflight OPTIONS on the dashboard-touched routes.
+  app.options("/status", corsForDashboard);
+  app.options("/pause", corsForDashboard);
+  app.options("/resume", corsForDashboard);
 
   // GET /export?secret=<WEBHOOK_SECRET>
   // Streams a gzipped copy of the ledger.db file for off-site backup.
