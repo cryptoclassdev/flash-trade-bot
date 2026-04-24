@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { readWizardState, writeWizardState } from "@/lib/storage";
+import { readWizardState } from "@/lib/storage";
 import { BotClient, type BotClientError } from "@/lib/bot-client";
 import { track } from "@/lib/analytics";
 import { TrackMount } from "@/components/TrackMount";
@@ -10,12 +10,16 @@ import type { StatusResponse } from "shared";
 
 const POLL_MS = 15_000;
 
+type SetupInfo = {
+  setupMode: boolean;
+  network: string;
+  missingEnv: string[];
+  webhookUrl: string;
+};
+
 export default function StatusPage() {
-  const [configured, setConfigured] = useState<boolean | null>(null);
-  const [railwayUrl, setRailwayUrl] = useState("");
-  const [dashboardToken, setDashboardToken] = useState("");
-  const [setupUrlInput, setSetupUrlInput] = useState("");
-  const [setupTokenInput, setSetupTokenInput] = useState("");
+  const [origin, setOrigin] = useState<string | null>(null);
+  const [setupInfo, setSetupInfo] = useState<SetupInfo | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<BotClientError | null>(null);
   const [loading, setLoading] = useState(false);
@@ -23,47 +27,55 @@ export default function StatusPage() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
   useEffect(() => {
-    const s = readWizardState();
-    if (s.railwayUrl && s.dashboardToken) {
-      setRailwayUrl(s.railwayUrl);
-      setDashboardToken(s.dashboardToken);
-      setConfigured(true);
-    } else {
-      setConfigured(false);
+    setOrigin(window.location.origin);
+  }, []);
+
+  const fetchSetupInfo = useCallback(async (): Promise<SetupInfo | null> => {
+    try {
+      const res = await fetch("/api/setup-info");
+      if (!res.ok) return null;
+      return (await res.json()) as SetupInfo;
+    } catch {
+      return null;
     }
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!railwayUrl) return;
+    if (!origin) return;
     setLoading(true);
     setError(null);
     try {
-      const client = new BotClient(railwayUrl, dashboardToken || null);
+      const info = await fetchSetupInfo();
+      setSetupInfo(info);
+      if (info?.setupMode) {
+        setStatus(null);
+        setLastUpdated(Date.now());
+        return;
+      }
+      const client = new BotClient(origin, null);
       const s = await client.status();
       setStatus(s);
       setLastUpdated(Date.now());
     } catch (e) {
       setError(e as BotClientError);
-      track("error.status.poll_fail", {
-        kind: (e as BotClientError).kind,
-      });
+      track("error.status.poll_fail", { kind: (e as BotClientError).kind });
     } finally {
       setLoading(false);
     }
-  }, [railwayUrl, dashboardToken]);
+  }, [origin, fetchSetupInfo]);
 
   useEffect(() => {
-    if (!railwayUrl) return;
+    if (!origin) return;
     refresh();
     const t = setInterval(refresh, POLL_MS);
     return () => clearInterval(t);
-  }, [railwayUrl, refresh]);
+  }, [origin, refresh]);
 
   async function onPauseResume() {
-    if (!status) return;
+    if (!status || !origin) return;
     setPausing(true);
     try {
-      const client = new BotClient(railwayUrl, dashboardToken || null);
+      const client = new BotClient(origin, null);
       if (status.halt.halted) {
         track("status.resume.clicked");
         await client.resume();
@@ -79,70 +91,35 @@ export default function StatusPage() {
     }
   }
 
-  function onManualConfig(e: React.FormEvent) {
-    e.preventDefault();
-    if (!setupUrlInput.trim()) return;
-    const url = setupUrlInput.trim().replace(/\/+$/, "");
-    writeWizardState({
-      railwayUrl: url,
-      dashboardToken: setupTokenInput.trim() || undefined,
-    });
-    setRailwayUrl(url);
-    setDashboardToken(setupTokenInput.trim());
-    setConfigured(true);
-  }
+  if (!origin) return null;
 
-  if (configured === null) return null;
-
-  if (!configured) {
+  // Bot is still in setup mode → nudge user to finish configuration.
+  if (setupInfo?.setupMode) {
     return (
       <Frame>
-        <h1 className="text-2xl font-semibold">Connect your bot</h1>
+        <TrackMount event="status.visited" />
+        <h1 className="text-2xl font-semibold">Setup not finished</h1>
         <p className="mt-3 text-fg-muted">
-          Paste the Railway URL of a deployed flash-trade-bot, plus the
-          dashboard token you set as <code className="font-mono">DASHBOARD_TOKEN</code>{" "}
-          on Railway.
+          The bot is running in <code className="font-mono">SETUP_MODE</code>.
+          Trading is disabled until you paste env vars into Railway and remove
+          SETUP_MODE.
         </p>
-        <form onSubmit={onManualConfig} className="mt-6 space-y-4">
-          <div>
-            <label className="text-xs uppercase tracking-wide text-fg-subtle">
-              Railway URL
-            </label>
-            <input
-              type="text"
-              value={setupUrlInput}
-              onChange={(e) => setSetupUrlInput(e.target.value)}
-              placeholder="https://flash-trade-bot-production.up.railway.app"
-              className="mt-2 w-full rounded-md border border-border bg-bg-raised px-3 py-2.5 font-mono text-sm focus:border-border-strong focus:outline-none"
-              required
-            />
+        {setupInfo.missingEnv.length > 0 && (
+          <div className="mt-6 rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm">
+            <div className="text-warning">Missing env vars on Railway:</div>
+            <ul className="mt-2 list-disc pl-5 font-mono text-xs text-fg-muted">
+              {setupInfo.missingEnv.map((v) => (
+                <li key={v}>{v}</li>
+              ))}
+            </ul>
           </div>
-          <div>
-            <label className="text-xs uppercase tracking-wide text-fg-subtle">
-              Dashboard token (optional — leave blank if DASHBOARD_TOKEN unset)
-            </label>
-            <input
-              type="text"
-              value={setupTokenInput}
-              onChange={(e) => setSetupTokenInput(e.target.value)}
-              placeholder="64 hex characters"
-              className="mt-2 w-full rounded-md border border-border bg-bg-raised px-3 py-2.5 font-mono text-sm focus:border-border-strong focus:outline-none"
-            />
-          </div>
-          <button
-            type="submit"
-            className="rounded-md bg-accent px-6 py-2.5 font-medium text-black transition hover:bg-accent-hover"
-          >
-            Connect →
-          </button>
-        </form>
-        <p className="mt-8 text-sm text-fg-subtle">
-          Haven&apos;t deployed yet?{" "}
-          <Link className="underline hover:text-fg" href="/setup/wallet">
-            Run the setup wizard
-          </Link>
-          .
-        </p>
+        )}
+        <Link
+          href="/setup/wallet"
+          className="mt-8 inline-flex rounded-md bg-accent px-6 py-2.5 font-medium text-black hover:bg-accent-hover"
+        >
+          Resume setup →
+        </Link>
       </Frame>
     );
   }
@@ -153,22 +130,22 @@ export default function StatusPage() {
       <div className="mb-6 flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold">Status</h1>
         <span className="text-xs text-fg-subtle">
-          {loading && !status ? "Loading..." : lastUpdated ? `Updated ${fmtRelative(lastUpdated)}` : ""}
+          {loading && !status
+            ? "Loading..."
+            : lastUpdated
+              ? `Updated ${fmtRelative(lastUpdated)}`
+              : ""}
         </span>
       </div>
 
       {error && (
         <div className="mb-6 rounded-md border border-danger/40 bg-danger/5 p-4 text-sm text-danger">
           <div className="font-medium">
-            {error.kind === "cors"
-              ? "Your bot hasn't been redeployed with dashboard support"
-              : error.kind === "unauthorized"
-                ? "Bot rejected the dashboard token"
-                : error.kind === "not-found"
-                  ? "Bot is missing dashboard routes"
-                  : error.kind === "shape"
-                    ? "Unexpected response shape"
-                    : "Could not reach the bot"}
+            {error.kind === "network"
+              ? "Could not reach the bot"
+              : error.kind === "shape"
+                ? "Unexpected response shape"
+                : "Error"}
           </div>
           <div className="mt-1 text-fg-muted">{error.message}</div>
         </div>
@@ -208,8 +185,7 @@ export default function StatusPage() {
                         {p.asset} {p.side}
                       </div>
                       <div className="text-xs text-fg-muted">
-                        size ${p.sizeUsd.toFixed(0)} @ $
-                        {p.entryPrice.toFixed(2)}
+                        size ${p.sizeUsd.toFixed(0)} @ ${p.entryPrice.toFixed(2)}
                       </div>
                     </div>
                   ))}
@@ -242,18 +218,16 @@ export default function StatusPage() {
           </div>
 
           <div className="mt-6 rounded-lg border border-border bg-bg-raised p-4 text-sm">
-            <div className="flex items-center justify-between">
-              <div className="text-fg-muted">
-                Strategy: RSI Divergence · {status.tradingParams.asset} ·{" "}
-                {status.tradingParams.leverage}× · $
-                {status.tradingParams.collateralUsdc} per trade
-              </div>
+            <div className="text-fg-muted">
+              Strategy: RSI Divergence · {status.tradingParams.asset} ·{" "}
+              {status.tradingParams.leverage}× · $
+              {status.tradingParams.collateralUsdc} per trade
             </div>
             <div className="mt-2 text-xs text-fg-subtle">
               Last signal:{" "}
               {status.lastSignalReceivedAt
                 ? fmtRelative(status.lastSignalReceivedAt)
-                : "none yet"}
+                : "none yet"}{" "}
               · Network: {status.network}
             </div>
           </div>
@@ -284,7 +258,7 @@ export default function StatusPage() {
               Refresh
             </button>
             <a
-              href={`${railwayUrl}/export?secret=${encodeURIComponent(
+              href={`/export?secret=${encodeURIComponent(
                 readWizardState().webhookSecret || "",
               )}`}
               className="rounded-md border border-border bg-bg-raised px-4 py-2 text-sm text-fg-muted hover:border-border-strong hover:text-fg"

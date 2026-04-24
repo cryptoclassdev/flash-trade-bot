@@ -43,6 +43,12 @@ export interface AppConfig {
    * When unset, defaults to the public dashboard domain + localhost for dev.
    */
   dashboardOrigin: string | null;
+  /**
+   * SETUP_MODE=true boots the server WITHOUT trading. The bundled dashboard
+   * is served so the user can walk through configuration. /webhook returns
+   * 503 until the user fills env vars and unsets SETUP_MODE.
+   */
+  setupMode: boolean;
 }
 
 function required(name: string): string {
@@ -61,15 +67,20 @@ function num(name: string, parsed: number, min?: number, max?: number): number {
 }
 
 export function loadConfig(): AppConfig {
-  const network = required("NETWORK") as Network;
+  const setupMode = (process.env.SETUP_MODE || "").toLowerCase() === "true";
+
+  // In SETUP_MODE, most env vars are optional — the bot boots only to serve
+  // the dashboard. Network still defaults to mainnet-beta so the dashboard
+  // knows what to target, but trading paths are disabled server-side.
+  const network = (process.env.NETWORK || "mainnet-beta") as Network;
   if (network !== "devnet" && network !== "mainnet-beta") {
     throw new Error(`NETWORK must be 'devnet' or 'mainnet-beta', got: ${network}`);
   }
 
   const dryRunOnly = (process.env.DRY_RUN_ONLY || "").toLowerCase() === "true";
 
-  // Real-money guard only applies when NOT dry-running. Dry-run cannot submit txs.
-  if (network === "mainnet-beta" && !dryRunOnly) {
+  // Real-money guard only applies when NOT dry-running and NOT in setup mode.
+  if (network === "mainnet-beta" && !dryRunOnly && !setupMode) {
     const ack = process.env.I_UNDERSTAND_REAL_MONEY;
     if (ack !== "yes") {
       throw new Error(
@@ -79,12 +90,16 @@ export function loadConfig(): AppConfig {
     }
   }
 
-  // Dry-run skips all sign+send paths, so RPC URL and PRIVATE_KEY are not needed.
+  // Dry-run + setup mode skip all sign+send paths; RPC URL and PRIVATE_KEY are not needed.
   let rpcUrl = "";
   let walletKeypair: Keypair | null = null;
   let walletPubkey: string;
 
-  if (dryRunOnly) {
+  if (setupMode) {
+    // Bot serves dashboard only. Placeholder pubkey lets telemetry + status
+    // shape render without a real wallet. Dashboard shows "not configured".
+    walletPubkey = "11111111111111111111111111111111";
+  } else if (dryRunOnly) {
     const pk = required("DRY_RUN_WALLET_PUBKEY");
     try {
       walletPubkey = new PublicKey(pk).toBase58();
@@ -116,10 +131,18 @@ export function loadConfig(): AppConfig {
     flashApiBaseUrl: process.env.FLASH_API_BASE_URL || "https://flashapi.trade",
     walletKeypair,
     walletPubkey,
-    webhookSecret: dryRunOnly ? (process.env.WEBHOOK_SECRET || "dryrun-noop") : required("WEBHOOK_SECRET"),
+    webhookSecret: setupMode
+      ? (process.env.WEBHOOK_SECRET || "setup-mode-no-webhook")
+      : dryRunOnly
+        ? (process.env.WEBHOOK_SECRET || "dryrun-noop")
+        : required("WEBHOOK_SECRET"),
     port: num("PORT", parseInt(process.env.PORT || "3000", 10), 1, 65535),
-    telegramBotToken: dryRunOnly ? (process.env.TELEGRAM_BOT_TOKEN || "") : required("TELEGRAM_BOT_TOKEN"),
-    telegramChatId: dryRunOnly ? (process.env.TELEGRAM_CHAT_ID || "") : required("TELEGRAM_CHAT_ID"),
+    telegramBotToken: (setupMode || dryRunOnly)
+      ? (process.env.TELEGRAM_BOT_TOKEN || "")
+      : required("TELEGRAM_BOT_TOKEN"),
+    telegramChatId: (setupMode || dryRunOnly)
+      ? (process.env.TELEGRAM_CHAT_ID || "")
+      : required("TELEGRAM_CHAT_ID"),
     asset: process.env.ASSET || "BTC",
     collateralUsdc: num("COLLATERAL_USDC", parseFloat(process.env.COLLATERAL_USDC || "20"), 0.01, 100000),
     leverage: num("LEVERAGE", parseFloat(process.env.LEVERAGE || "2"), 1, 100),
@@ -130,6 +153,7 @@ export function loadConfig(): AppConfig {
     dryRunOnly,
     dashboardToken: process.env.DASHBOARD_TOKEN?.trim() || null,
     dashboardOrigin: process.env.DASHBOARD_ORIGIN?.trim() || null,
+    setupMode,
   };
 }
 

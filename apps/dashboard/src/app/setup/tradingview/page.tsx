@@ -6,12 +6,14 @@ import { WizardLayout } from "@/components/WizardLayout";
 import { CopyButton } from "@/components/CopyButton";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { track } from "@/lib/analytics";
+import { generatePineFile } from "shared/pine-gen";
 
 export default function TradingViewPage() {
   const router = useRouter();
-  const [railwayUrl, setRailwayUrl] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
     const s = readWizardState();
@@ -19,18 +21,44 @@ export default function TradingViewPage() {
       router.replace("/setup/wallet");
       return;
     }
-    if (!s.railwayUrl || !s.webhookSecret) {
+    if (!s.webhookSecret) {
       router.replace("/setup/deploy");
       return;
     }
-    setRailwayUrl(s.railwayUrl);
     setWebhookSecret(s.webhookSecret);
   }, [router]);
 
-  const webhookUrl = railwayUrl ? `${railwayUrl}/webhook` : "";
-  const pineDownloadUrl = webhookSecret
-    ? `/api/pine?secret=${encodeURIComponent(webhookSecret)}`
-    : "";
+  // Same-origin: the bot is serving this dashboard, so current origin is
+  // both the dashboard URL and the bot URL.
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const webhookUrl = origin ? `${origin}/webhook` : "";
+
+  async function onDownloadPine() {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const res = await fetch("/pine-source");
+      if (!res.ok) throw new Error(`Bot returned HTTP ${res.status}`);
+      const source = await res.text();
+      const generated = generatePineFile({
+        webhookSecret,
+        pineSource: source,
+      });
+      const blob = new Blob([generated], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "flash-trade-bot-rsi-divergence.pine";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setDownloadError(
+        e instanceof Error ? e.message : "Could not generate Pine file",
+      );
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   function onFinish() {
     if (!confirmed) return;
@@ -43,7 +71,7 @@ export default function TradingViewPage() {
     router.push("/status");
   }
 
-  if (!railwayUrl) return null;
+  if (!webhookSecret) return null;
 
   return (
     <WizardLayout step={7} title="Wire up TradingView">
@@ -58,13 +86,21 @@ export default function TradingViewPage() {
             Your webhook secret is already baked into the Pine file&apos;s
             input default — you won&apos;t need to paste it manually.
           </p>
-          <a
-            href={pineDownloadUrl}
-            download
-            className="mt-3 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-black transition hover:bg-accent-hover"
+          <button
+            type="button"
+            onClick={onDownloadPine}
+            disabled={downloading}
+            className="mt-3 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-black transition hover:bg-accent-hover disabled:opacity-50"
           >
-            Download flash-trade-bot-rsi-divergence.pine
-          </a>
+            {downloading
+              ? "Generating..."
+              : "Download flash-trade-bot-rsi-divergence.pine"}
+          </button>
+          {downloadError && (
+            <div className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-xs text-danger">
+              {downloadError}
+            </div>
+          )}
         </Step>
 
         <Step n={2} title="Open TradingView and create the strategy">

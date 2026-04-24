@@ -5,21 +5,34 @@ import { useRouter } from "next/navigation";
 import { WizardLayout } from "@/components/WizardLayout";
 import { CopyButton } from "@/components/CopyButton";
 import { readWizardState, writeWizardState } from "@/lib/storage";
-import { buildRailwayDeployUrl, generateHexSecret } from "@/lib/railway";
+import { generateHexSecret } from "@/lib/railway";
 import { track } from "@/lib/analytics";
-import { STRATEGY_DEFAULTS } from "shared";
-import type { BotEnv } from "shared";
+import { STRATEGY_DEFAULTS, type BotEnv } from "shared";
+
+/**
+ * In the bundled architecture, the bot IS already deployed (you're reading
+ * this screen because the bot served the dashboard). So this screen no
+ * longer says "deploy to Railway". It tells the user what env vars to paste
+ * into their existing Railway service + remove SETUP_MODE, then wait for
+ * the automatic restart.
+ */
+
+type SetupInfo = {
+  setupMode: boolean;
+  network: string;
+  missingEnv: string[];
+  webhookUrl: string;
+};
 
 export default function DeployPage() {
   const router = useRouter();
   const [state, setState] = useState<ReturnType<typeof readWizardState> | null>(
     null,
   );
-  const [railwayUrl, setRailwayUrl] = useState("");
-  const [healthStatus, setHealthStatus] = useState<
-    "idle" | "checking" | "ok" | "fail"
-  >("idle");
-  const [healthMessage, setHealthMessage] = useState<string | null>(null);
+  const [setupInfo, setSetupInfo] = useState<SetupInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const s = readWizardState();
@@ -27,22 +40,18 @@ export default function DeployPage() {
       router.replace("/setup/wallet");
       return;
     }
-    if (!s.webhookSecret || !s.dashboardToken) {
-      const patch = {
-        webhookSecret: s.webhookSecret || generateHexSecret(32),
-        dashboardToken: s.dashboardToken || generateHexSecret(32),
-      };
-      setState(writeWizardState(patch));
+    // Generate one-time secrets if missing. These get pasted into Railway.
+    if (!s.webhookSecret) {
+      setState(writeWizardState({ webhookSecret: generateHexSecret(32) }));
     } else {
       setState(s);
     }
-    if (s.railwayUrl) setRailwayUrl(s.railwayUrl);
   }, [router]);
 
-  const deployEnv = useMemo<Partial<BotEnv>>(() => {
-    if (!state) return {};
+  const envBlock = useMemo(() => {
+    if (!state) return "";
     const strategy = state.strategy || STRATEGY_DEFAULTS;
-    return {
+    const values: Partial<BotEnv> = {
       NETWORK: "mainnet-beta",
       I_UNDERSTAND_REAL_MONEY: "yes",
       RPC_URL_MAINNET: state.rpcUrl,
@@ -51,7 +60,6 @@ export default function DeployPage() {
       WEBHOOK_SECRET: state.webhookSecret,
       TELEGRAM_BOT_TOKEN: state.telegramBotToken,
       TELEGRAM_CHAT_ID: state.telegramChatId,
-      DASHBOARD_TOKEN: state.dashboardToken,
       ASSET: strategy.ASSET,
       COLLATERAL_USDC: String(strategy.COLLATERAL_USDC),
       LEVERAGE: String(strategy.LEVERAGE),
@@ -59,179 +67,134 @@ export default function DeployPage() {
       SLIPPAGE_ENTRY_BPS: String(strategy.SLIPPAGE_ENTRY_BPS),
       SLIPPAGE_EXIT_BPS: String(strategy.SLIPPAGE_EXIT_BPS),
     };
+    return Object.entries(values)
+      .filter(([, v]) => v !== undefined && v !== null && v !== "")
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
   }, [state]);
 
-  const railwayDeployUrl = useMemo(
-    () => buildRailwayDeployUrl(deployEnv),
-    [deployEnv],
-  );
-
-  const envBlock = useMemo(
-    () =>
-      Object.entries(deployEnv)
-        .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${k}=${v}`)
-        .join("\n"),
-    [deployEnv],
-  );
-
-  async function onVerify() {
-    if (!railwayUrl.trim()) return;
-    setHealthStatus("checking");
-    setHealthMessage(null);
+  async function checkStatus() {
+    setChecking(true);
+    setStatusMessage(null);
     try {
-      const url = railwayUrl.trim().replace(/\/+$/, "");
-      const res = await fetch(`${url}/health`, {
-        mode: "cors",
-        headers: { accept: "application/json" },
-      });
-      if (!res.ok) {
-        throw new Error(`Health check returned HTTP ${res.status}`);
-      }
-      const json = (await res.json()) as {
-        status?: string;
-        wallet?: string;
-        network?: string;
-      };
-      if (json.status !== "ok") {
-        throw new Error(`Unexpected /health response: ${JSON.stringify(json)}`);
-      }
-      if (state?.walletPubkey && json.wallet && json.wallet !== state.walletPubkey) {
-        throw new Error(
-          "The bot is running with a different wallet than the one you generated. Check the PRIVATE_KEY env var in Railway.",
+      const res = await fetch("/api/setup-info");
+      if (!res.ok) throw new Error(`Bot returned HTTP ${res.status}`);
+      const info = (await res.json()) as SetupInfo;
+      setSetupInfo(info);
+      if (!info.setupMode) {
+        setReady(true);
+        setStatusMessage("Bot is out of setup mode and ready to trade.");
+        track("setup.bot.verified");
+      } else if (info.missingEnv.length === 0) {
+        setStatusMessage(
+          "All env vars are set, but SETUP_MODE is still true. Remove SETUP_MODE on Railway and wait for the restart.",
+        );
+      } else {
+        setStatusMessage(
+          `Still waiting on: ${info.missingEnv.join(", ")}. Paste them into Railway and wait for the restart.`,
         );
       }
-      setHealthStatus("ok");
-      setHealthMessage(
-        json.network === "mainnet-beta"
-          ? "Bot is live on mainnet-beta."
-          : `Bot is running (network=${json.network}).`,
-      );
-      track("setup.bot.verified");
     } catch (e) {
-      setHealthStatus("fail");
-      setHealthMessage(
-        e instanceof Error ? e.message : "Could not reach the bot.",
+      setStatusMessage(
+        e instanceof Error ? e.message : "Could not reach the bot",
       );
       track("error.railway.health_fail");
+    } finally {
+      setChecking(false);
     }
   }
 
+  useEffect(() => {
+    checkStatus();
+  }, []);
+
   function onContinue() {
-    if (healthStatus !== "ok" || !railwayUrl.trim()) return;
-    writeWizardState({
-      railwayUrl: railwayUrl.trim().replace(/\/+$/, ""),
-      botHealthVerified: true,
-    });
+    if (!ready) return;
+    writeWizardState({ botHealthVerified: true });
     router.push("/setup/tradingview");
   }
 
   if (!state) return null;
 
-  const ready =
-    !!state.rpcUrl &&
-    !!state.telegramBotToken &&
-    !!state.telegramChatId &&
-    !!state.walletPubkey;
-
   return (
-    <WizardLayout step={6} title="Deploy to Railway">
-      {!ready && (
-        <div className="mb-6 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm text-warning">
-          One or more earlier steps were skipped. The deploy URL below will be
-          incomplete. Go back and finish them before deploying.
-        </div>
-      )}
+    <WizardLayout step={6} title="Finish Railway configuration">
+      <p className="mb-6 text-fg-muted">
+        Your bot is already deployed on Railway (you&apos;re reading this page
+        served by it). Now it needs the env vars from the earlier steps, and
+        you need to flip it out of setup mode.
+      </p>
 
-      <div className="mb-6 space-y-3 rounded-lg border border-border bg-bg-raised p-4 text-sm">
-        <Check ok={!!state.walletPubkey}>Wallet generated</Check>
-        <Check ok={!!state.walletFunded}>Wallet funded (or skipped)</Check>
-        <Check ok={!!state.rpcUrl}>Helius RPC connected</Check>
-        <Check ok={!!state.telegramVerified}>Telegram bot verified</Check>
-        <Check ok={!!state.strategy}>Strategy configured</Check>
-      </div>
-
-      <div className="space-y-5">
-        <div>
-          <a
-            href={railwayDeployUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center rounded-md bg-accent px-6 py-3 font-medium text-black transition hover:bg-accent-hover"
-          >
-            Deploy on Railway →
-          </a>
-          <p className="mt-2 text-xs text-fg-subtle">
-            Opens Railway in a new tab with env vars pre-filled. Paste your
-            private key into <code className="font-mono">PRIVATE_KEY</code>{" "}
-            (it&apos;s marked <code>REPLACE_WITH_YOUR_PRIVATE_KEY</code>), then
-            click Deploy.
+      <ol className="mb-8 space-y-5">
+        <Step n={1} title="Open your Railway service → Variables">
+          <p className="text-sm text-fg-muted">
+            Settings → Variables tab on your{" "}
+            <code className="font-mono">flash-trade-bot</code> service.
           </p>
-        </div>
+        </Step>
 
-        <details>
-          <summary className="cursor-pointer text-xs text-fg-subtle hover:text-fg-muted">
-            Can&apos;t use the button? Copy env vars as a block.
-          </summary>
+        <Step n={2} title="Paste these variables">
+          <p className="text-sm text-fg-muted">
+            Use the &quot;Raw Editor&quot; on Railway and paste the full block.
+            Replace <code className="font-mono">REPLACE_WITH_YOUR_PRIVATE_KEY</code>
+            {" "}with the base58 private key you generated in step 1.
+          </p>
           <div className="mt-3 rounded-md border border-border bg-bg p-3">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs uppercase tracking-wide text-fg-subtle">
-                Paste into Railway&apos;s raw editor
+                Env block
               </span>
               <CopyButton text={envBlock} label="Copy all" />
             </div>
-            <pre className="overflow-x-auto font-mono text-xs text-fg-muted">
+            <pre className="max-h-72 overflow-auto font-mono text-xs text-fg-muted">
               {envBlock}
             </pre>
           </div>
-        </details>
-      </div>
+        </Step>
 
-      <hr className="my-10 border-border" />
+        <Step n={3} title="Remove SETUP_MODE">
+          <p className="text-sm text-fg-muted">
+            Delete the <code className="font-mono">SETUP_MODE</code> variable
+            (or set it to <code className="font-mono">false</code>). Railway
+            redeploys automatically — takes about 60 seconds.
+          </p>
+        </Step>
+      </ol>
 
-      <div className="space-y-4">
-        <div>
-          <label className="text-xs uppercase tracking-wide text-fg-subtle">
-            Your Railway domain (once deploy finishes)
-          </label>
-          <input
-            type="text"
-            value={railwayUrl}
-            onChange={(e) => {
-              setRailwayUrl(e.target.value);
-              setHealthStatus("idle");
-            }}
-            placeholder="https://flash-trade-bot-production.up.railway.app"
-            className="mt-2 w-full rounded-md border border-border bg-bg-raised px-3 py-2.5 font-mono text-sm focus:border-border-strong focus:outline-none"
-          />
+      <div className="rounded-lg border border-border bg-bg-raised p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-fg-subtle">
+              Bot status
+            </div>
+            <div
+              className={`mt-1 text-sm ${ready ? "text-accent" : "text-fg-muted"}`}
+            >
+              {ready
+                ? "✓ Ready to trade"
+                : setupInfo?.setupMode
+                  ? "SETUP_MODE still on — waiting for restart"
+                  : "Checking..."}
+            </div>
+            {statusMessage && (
+              <div className="mt-2 text-xs text-fg-subtle">{statusMessage}</div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={checkStatus}
+            disabled={checking}
+            className="rounded-md border border-border bg-bg px-4 py-2 text-sm text-fg-muted hover:border-border-strong hover:text-fg disabled:opacity-50"
+          >
+            {checking ? "Checking..." : "Re-check"}
+          </button>
         </div>
-
-        <button
-          type="button"
-          onClick={onVerify}
-          disabled={!railwayUrl.trim() || healthStatus === "checking"}
-          className="rounded-md border border-border bg-bg-raised px-4 py-2 text-sm text-fg-muted hover:border-border-strong hover:text-fg disabled:opacity-40"
-        >
-          {healthStatus === "checking" ? "Checking /health..." : "Verify bot is up"}
-        </button>
-
-        {healthStatus === "ok" && healthMessage && (
-          <div className="rounded-md border border-accent/40 bg-accent/5 p-3 text-sm text-accent">
-            ✓ {healthMessage}
-          </div>
-        )}
-        {healthStatus === "fail" && healthMessage && (
-          <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-sm text-danger">
-            {healthMessage}
-          </div>
-        )}
       </div>
 
       <div className="mt-10 flex gap-3">
         <button
           type="button"
           onClick={onContinue}
-          disabled={healthStatus !== "ok"}
+          disabled={!ready}
           className="rounded-md bg-accent px-6 py-2.5 font-medium text-black transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           Continue →
@@ -248,15 +211,24 @@ export default function DeployPage() {
   );
 }
 
-function Check({ ok, children }: { ok: boolean; children: React.ReactNode }) {
+function Step({
+  n,
+  title,
+  children,
+}: {
+  n: number;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div
-      className={`flex items-center gap-2 ${ok ? "text-fg" : "text-fg-subtle"}`}
-    >
-      <span className={ok ? "text-accent" : "text-fg-subtle"}>
-        {ok ? "✓" : "○"}
-      </span>
-      <span>{children}</span>
-    </div>
+    <li className="rounded-lg border border-border bg-bg-raised p-5">
+      <div className="mb-3 flex items-center gap-3">
+        <span className="flex h-7 w-7 items-center justify-center rounded-full border border-border-strong font-mono text-sm">
+          {n}
+        </span>
+        <h3 className="font-medium">{title}</h3>
+      </div>
+      {children}
+    </li>
   );
 }

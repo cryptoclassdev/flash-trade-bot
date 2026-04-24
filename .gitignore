@@ -7,6 +7,9 @@ dist/
 out/
 *.tsbuildinfo
 
+# Bundled dashboard output — generated at Docker build time
+apps/webhook-server/public/
+
 # Secrets — NEVER commit
 .env
 .env.local
