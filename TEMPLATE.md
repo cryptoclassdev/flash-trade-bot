@@ -1,60 +1,92 @@
 # Deploy and Host flash-trade-bot on Railway
 
-flash-trade-bot is a self-hosted bot that turns TradingView strategy alerts into real perpetual-futures trades on flash.trade (Solana mainnet). It authenticates incoming webhooks, derives open/close/flip intents from position transitions, signs Solana transactions locally with your keypair, and notifies you on Telegram. You hold the keys. You bring the Pine strategy. One deploy, one trader.
+flash-trade-bot is a self-hosted trading bot that executes [flash.trade](https://flash.trade) perpetual-futures trades on Solana mainnet, driven by TradingView strategy alerts. It ships with a guided-setup web dashboard bundled into the same service — one Railway deploy, one URL, no separate onboarding infrastructure. You click Deploy, open the URL Railway gives you, and a browser wizard walks you through wallet generation, funding, Helius RPC, Telegram bot, TradingView alert, and live status monitoring.
 
 ## About Hosting flash-trade-bot
 
-Deploying flash-trade-bot on Railway gives you an always-on Express server behind Railway's HTTPS edge, a SQLite audit ledger on a mounted persistent volume, auto-restart on failure, graceful shutdown on redeploys, and a public webhook URL your TradingView alerts POST to. You bring a freshly generated Solana wallet, a paid RPC endpoint, a Telegram bot for notifications, and your own Pine strategy. The bot boots with `I_UNDERSTAND_REAL_MONEY=no` by default so you can verify `/health`, `/status`, and the full pipeline end-to-end before flipping the switch on live trading.
+Deploying flash-trade-bot on Railway gives you:
+
+- A single Node service serving both the Express trading bot and its Next.js-static setup dashboard from the same URL
+- An always-on Solana-perpetuals executor behind Railway's HTTPS edge, with auto-restart on failure and a 25-second graceful-shutdown drain on redeploys
+- A SQLite audit ledger on a mounted persistent volume
+- A `SETUP_MODE=true` first-boot flag that serves the dashboard only — trading paths refuse until you finish configuration and unset the flag
+- A live status page at the same URL (balance, open positions, realized PnL, halt state) with pause / resume buttons
+- A webhook URL you paste into TradingView to complete the loop
+
+You hold the keys. The dashboard generates the Solana keypair client-side in your browser and never sends it to any server other than your own Railway deployment.
 
 ## Common Use Cases
 
-- Run your own TradingView Pine strategy against flash.trade perpetuals 24/7 without keeping a laptop online.
-- Automate entries, exits, and position flips on Solana-based perps without handing custody of your wallet to a third-party service.
-- Validate a new strategy on small size with built-in safety guards: explicit real-money acknowledgment, daily-loss circuit breaker, slippage tolerance, webhook-secret authentication, and a dry-run mode that never signs.
+- Run a TradingView Pine strategy against flash.trade perpetuals 24/7 without keeping a laptop online
+- Automate entries, exits, and position flips on Solana perps while holding your own keys
+- Validate strategy ideas with built-in safety guards: daily-loss circuit breaker, slippage tolerance, webhook-secret authentication, constant-time auth checks, a pause/resume control from the dashboard, and a dry-run mode that never signs
 
-## Dependencies for flash-trade-bot Hosting
+## What You Need Before Deploy
 
-- A freshly generated Solana wallet (base58 secret key). Never reuse an existing wallet. Fund with only what you can afford to lose.
-- A small USDC balance on the wallet plus about 0.02 SOL for gas.
-- A paid Solana mainnet RPC endpoint. The public endpoint is rate-limited and will drop trades.
-- A TradingView Pro+ subscription. Free and Essential tiers cannot send webhook alerts.
-- A Telegram bot token from @BotFather and your numeric chat id for trade notifications.
-- A Pine strategy that emits webhook alerts in the schema this bot validates. A reference example ships with the repo.
+Almost nothing — the post-deploy dashboard collects everything it needs, including generating the Solana keypair in your browser. You only need:
 
-### Deployment Dependencies
+- A funded credit card for Railway and TradingView (~$20/mo combined)
+- A Telegram account
+- About 30 minutes
+
+You'll get the Solana private key, Helius URL, Telegram bot token, and webhook secret during the dashboard walkthrough — not before deploy.
+
+### Dependencies the dashboard links you to during setup
 
 - [Helius RPC (free tier)](https://www.helius.dev/)
 - [TradingView Pro+ pricing](https://www.tradingview.com/pricing/)
 - [@BotFather on Telegram](https://t.me/BotFather)
-- [Solana CLI install guide](https://docs.solana.com/cli/install-solana-cli-tools)
 - [flash.trade](https://flash.trade/)
 - [Source repository](https://github.com/cryptoclassdev/flash-trade-bot)
 
-### Implementation Details
+## Implementation Details
 
-The bot exposes four HTTP endpoints behind Railway's edge:
+Post-deploy the bot exposes these endpoints on your Railway URL:
 
-- `POST /webhook`: TradingView signal ingress. Constant-time secret check, dedupe by signal id, async executor.
-- `GET /health`: liveness plus halt state. Used by Railway's healthcheck and your own monitoring.
-- `GET /status`: open positions, last signal timestamp, realized PnL today, live trading parameters.
-- `GET /export?secret=...`: gzipped SQLite backup of the ledger for off-site archival.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /` | Bundled dashboard landing page. Start here. |
+| `GET /setup/*` | Seven-screen setup wizard (wallet, fund, rpc, telegram, strategy, deploy, tradingview) |
+| `GET /status` | Live dashboard: balance, positions, PnL, halt state, pause/resume controls |
+| `GET /health` | Liveness + `setup_mode` flag. Used by Railway's healthcheck. |
+| `GET /api/setup-info` | Dashboard self-introspection; lists missing env vars while in SETUP_MODE |
+| `GET /pine-source` | Reference Pine script; the dashboard fetches this, injects your secret, serves a Blob download |
+| `POST /webhook` | TradingView signal ingress. Constant-time secret check, dedupe by signal id, async executor. |
+| `POST /pause` / `POST /resume` | Dashboard control — halt new opens, resume trading |
+| `GET /export?secret=...` | Gzipped SQLite backup of the ledger for off-site archival |
 
-Trade intents are derived from the TradingView position transition:
+Trade intents are derived from TradingView position transitions:
 
 ```
 flat  -> long   = open long
 flat  -> short  = open short
 long  -> flat   = close long
 short -> flat   = close short
-long  -> short  = flip
+long  -> short  = flip (atomic reverse-position)
 short -> long   = flip
 same  -> same   = noop
 ```
 
-Railway-specific constraints: `numReplicas=1` (SQLite plus multi-instance equals corruption), volume mounted at `/data` for the ledger database, graceful SIGTERM drain with a 25-second deadline before Railway's SIGKILL, and rate limiting on `/webhook` at 60 requests per minute per IP. Full architecture, operational runbook, and the risk disclaimer live in the repo's `README.md`, `AGENTS.md`, `SECURITY-NOTES.md`, and `DISCLAIMER.md`.
+Railway-specific constraints: `numReplicas=1` (SQLite + multi-instance = corruption), volume mounted at `/data` for the ledger database, graceful SIGTERM drain with a 25-second deadline before Railway's SIGKILL, rate limiting on `/webhook` at 60 requests per minute per IP. Full architecture, operational runbook, and the risk disclaimer live in the repo's `README.md`, `AGENTS.md`, `SECURITY-NOTES.md`, `DISCLAIMER.md`, and `DASHBOARD-PLAN.md`.
+
+## First Boot Flow
+
+1. Click **Deploy on Railway**
+2. Railway provisions the service with `SETUP_MODE=true` default — the bot boots only to serve the dashboard
+3. Open your Railway URL in a browser
+4. Setup wizard:
+    - **Wallet**: browser generates a fresh Solana keypair (client-side, never sent)
+    - **Fund**: Solana Pay QR or deep link, ~50 USDC + 0.05 SOL
+    - **RPC**: sign up for Helius, paste URL, dashboard validates
+    - **Telegram**: BotFather token, dashboard auto-fetches chat id
+    - **Strategy**: RSI Divergence BTC, sliders for collateral / leverage / max-loss
+    - **Deploy**: dashboard generates env-var block, you paste into Railway → Variables and remove `SETUP_MODE`
+    - **TradingView**: download Pine file (secret pre-baked), paste into TradingView, create alert
+5. Dashboard re-checks `/api/setup-info` → bot exits SETUP_MODE → live status page becomes available
+6. TradingView fires alerts → bot trades → Telegram notifies → status updates
 
 ## Why Deploy flash-trade-bot on Railway?
 
 Railway is a singular platform to deploy your infrastructure stack. Railway will host your infrastructure so you don't have to deal with configuration, while allowing you to vertically and horizontally scale it.
 
-By deploying flash-trade-bot on Railway, you are one step closer to supporting a complete full-stack application with minimal burden. Host your servers, databases, AI agents, and more on Railway.
+flash-trade-bot was architected for Railway specifically: single-replica SQLite, mounted volume for ledger persistence, Dockerfile that uses `turbo prune` to keep the image minimal, bundled dashboard so there's no second service to manage or pay for.
