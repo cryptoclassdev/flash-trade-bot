@@ -2,6 +2,11 @@ node_modules/
 dist/
 .turbo/
 
+# Next.js
+.next/
+out/
+*.tsbuildinfo
+
 # Secrets — NEVER commit
 .env
 .env.local
