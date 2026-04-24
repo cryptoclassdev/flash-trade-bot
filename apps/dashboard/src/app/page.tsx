@@ -24,23 +24,15 @@ export default function LandingPage() {
 
       <section className="flex flex-1 flex-col justify-center">
         <h1 className="text-4xl font-semibold leading-tight sm:text-5xl">
-          Run automated Solana perps trading
-          <br />
-          <span className="text-accent">on your own wallet.</span>
+          Welcome. This is your{" "}
+          <span className="text-accent">trading bot.</span>
         </h1>
 
         <p className="mt-6 max-w-2xl text-lg text-fg-muted">
-          A guided setup for the{" "}
-          <a
-            href="https://github.com/cryptoclassdev/flash-trade-bot"
-            className="text-fg underline underline-offset-4 hover:text-accent"
-            target="_blank"
-            rel="noreferrer"
-          >
-            flash-trade-bot
-          </a>{" "}
-          Railway template. Takes about 30 minutes. You generate the wallet, you
-          fund it, you hold the keys. We just make the setup less painful.
+          You just deployed <span className="font-mono text-fg">flash-trade-bot</span>{" "}
+          to Railway. This dashboard walks you through the rest of the setup:
+          wallet, funding, RPC, Telegram, strategy, and TradingView. Takes about
+          30 minutes. You hold your own keys the whole way.
         </p>
 
         <dl className="mt-10 grid grid-cols-1 gap-6 text-sm sm:grid-cols-3">
@@ -67,13 +59,13 @@ export default function LandingPage() {
             href="/setup/wallet"
             className="inline-flex items-center justify-center rounded-md bg-accent px-8 py-3 font-medium text-black transition hover:bg-accent-hover focus-visible:outline-accent"
           >
-            Start setup →
+            Start the setup wizard →
           </Link>
           <Link
             href="/status"
             className="inline-flex items-center justify-center px-4 py-3 text-sm text-fg-muted hover:text-fg"
           >
-            I already deployed — show my bot&apos;s status
+            Skip — show bot status
           </Link>
         </div>
 
