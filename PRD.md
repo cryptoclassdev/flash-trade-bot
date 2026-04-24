@@ -1,11 +1,15 @@
 # flash-trade-bot — Product Requirements Document
 
-**Status:** Committed. Level 3 (fully managed Telegram-native trading product).
-**Version:** 1.0
+**Status:** Active. Execution path: **self-host Railway template + guided web dashboard** (see `DASHBOARD-PLAN.md`). Aspirational endpoint: **Level 3 managed Telegram-native** (Sections 1-12 of this doc), gated on dashboard success criterion being met or missed.
+**Version:** 2.0
 **Last updated:** 2026-04-24
 **Canonical:** This document is the source of truth for product decisions. Any change that diverges from what is written here requires an explicit update to this file first.
 
 > **Agents working on this repo:** before making product-shaping changes — features, flows, data model decisions, scope calls, pricing, strategy additions, platform choices — read this document end to end. If your change diverges from what is specified here, propose an update to this PRD before implementing. See the [Change Control](#13-change-control) section.
+
+> **Current execution direction (as of 2026-04-24):** We are **not** building the Level 3 managed product directly. We are first building a **guided web dashboard on top of the existing Railway-template bot** to validate whether there is demand at the self-host tier. If ≥200 users complete onboarding in 30 days post-launch, we continue investing in self-host. If <200, we pivot to the Level 3 managed product described in Sections 1-12 below. See `DASHBOARD-PLAN.md` §12 for the pivot decision framework.
+>
+> **How to read this PRD**: Sections 1-12 describe the Level 3 endpoint we may still pursue. Section 13-14 reflect the active governance protocol. The dashboard's specific functional/non-functional requirements, user journeys, and success metrics live in `DASHBOARD-PLAN.md` — which is operationally active right now.
 
 ---
 
@@ -401,7 +405,7 @@ Any of the following changes require a PRD update *before* implementation:
 - Modifying success metrics or release criteria.
 - Moving something from In Scope to Out of Scope or vice versa.
 
-Bug fixes, refactors, performance improvements, internal architecture changes, and infrastructure choices do NOT require PRD updates (see `AGENTS.md` and `LEVEL3-PLAN.md` for those).
+Bug fixes, refactors, performance improvements, internal architecture changes, and infrastructure choices do NOT require PRD updates (see `AGENTS.md` and `DASHBOARD-PLAN.md` for those).
 
 ### 13.2 How to update
 
@@ -421,12 +425,14 @@ Product decisions are ultimately the founder's. This PRD reflects those decision
 | Version | Date | Change |
 | --- | --- | --- |
 | 1.0 | 2026-04-24 | Initial PRD. Committed to Level 3 Telegram-native product. RSI Divergence strategy at launch. Turnkey MPC for non-custodial signing. Pyth for price feeds. Flash.trade only. Solo-founder build. |
+| 2.0 | 2026-04-24 | **Direction pivot**: execute self-host Railway template + guided web dashboard first. Level 3 managed product becomes aspirational endpoint gated on dashboard success (≥200 completed signups in 30 days post-launch). Rationale: 2-week build to validate demand at self-host tier without taking on custody/regulatory risk or 12-week managed build timeline. See `DASHBOARD-PLAN.md` for the operational plan. Sections 1-12 of this PRD remain accurate specifications for the Level 3 endpoint we may still pursue. |
 
 ---
 
 ## Appendix A — relationship to other docs
 
-- **`LEVEL3-PLAN.md`** — strategic plan. How we get to what this PRD specifies. 90-day roadmap, service-level technical choices, risk analysis, Week 1 execution.
+- **`DASHBOARD-PLAN.md`** — **operationally active**. Describes the guided self-host dashboard we are building right now. Includes 14-day roadmap, success criterion, failure modes, and the pivot-to-managed decision framework. Read this before any dashboard work.
+- **`LEVEL3-PLAN.md`** — *superseded for now*. Describes the Level 3 managed Telegram-native product. Preserved as the reference implementation plan for if/when we pivot to managed mode per the dashboard success criterion. Do not execute against this plan without a PRD revision.
 - **`AGENTS.md`** — conventions for agents working on the repo. References this PRD as the source of truth for product decisions. Codifies the tech conventions, testing expectations, commit style.
 - **`README.md`** — user-facing entry point. Describes the v0 Railway template. Will be rewritten to describe the Level 3 product once MVP ships.
 - **`DISCLAIMER.md`** — legal/risk disclosure. Shown to users during onboarding. Referenced from ToS.
