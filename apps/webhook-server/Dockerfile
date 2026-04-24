@@ -46,8 +46,10 @@ COPY --from=build /repo/apps/webhook-server/package.json ./package.json
 COPY --from=build /repo/apps/dashboard/out ./public/dashboard
 
 # Pine reference source — dashboard fetches via /pine-source, injects
-# WEBHOOK_SECRET client-side, triggers a Blob download.
-COPY --from=build /repo/tradingview-strategy.pine ./tradingview-strategy.pine
+# WEBHOOK_SECRET client-side, triggers a Blob download. Pulled from the
+# prune stage because turbo prune excludes non-workspace files at repo
+# root from its out/full/ tree.
+COPY --from=prune /repo/tradingview-strategy.pine ./tradingview-strategy.pine
 
 # Create /data so SQLite can write even before a volume attaches at runtime.
 RUN mkdir -p /data
