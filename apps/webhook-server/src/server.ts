@@ -90,6 +90,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (cfg.setupMode) {
+    console.log(
+      "\n" +
+      "=============================================================\n" +
+      "  SETUP_MODE=true — bot is serving the dashboard only.\n" +
+      "  Trading is disabled until you fill env vars and unset\n" +
+      "  SETUP_MODE. See your Railway domain in a browser.\n" +
+      "=============================================================\n"
+    );
+  }
+
   if (cfg.network === "devnet") {
     console.warn(
       "\n" +
@@ -102,17 +113,20 @@ async function main(): Promise<void> {
     );
   }
 
-  initTelegram(cfg);
-
-  for (const w of preflight(cfg)) console.warn(w);
-
-  if (cfg.resumeOnBoot) {
-    clearHalt();
-    console.log("[boot] RESUME=true — cleared halt state");
+  if (!cfg.setupMode) {
+    initTelegram(cfg);
+    for (const w of preflight(cfg)) console.warn(w);
+    if (cfg.resumeOnBoot) {
+      clearHalt();
+      console.log("[boot] RESUME=true — cleared halt state");
+    }
   }
 
-  const conn = new Connection(cfg.rpcUrl, "confirmed");
-  const backend = pickBackend(cfg);
+  // In setup mode, rpcUrl is empty. Use public mainnet as a safe default for
+  // the Connection object; it's not used server-side until trading is enabled.
+  const effectiveRpc = cfg.rpcUrl || "https://api.mainnet-beta.solana.com";
+  const conn = new Connection(effectiveRpc, "confirmed");
+  const backend = cfg.setupMode ? null : pickBackend(cfg);
 
   const app = express();
   app.set("trust proxy", 1); // Railway terminates TLS upstream; trust X-Forwarded-For for rate limit keying
@@ -136,7 +150,52 @@ async function main(): Promise<void> {
       wallet: cfg.walletPubkey,
       halted: isHalted(),
       halt_reason: haltReason() || undefined,
+      setup_mode: cfg.setupMode,
     });
+  });
+
+  // Dashboard self-introspection. No auth required — it only reveals which
+  // env vars are missing and whether the bot needs configuration. Used by the
+  // bundled dashboard to render "setup still pending" vs "ready to trade".
+  app.get("/api/setup-info", (_req: Request, res: Response) => {
+    const missing: string[] = [];
+    if (!cfg.setupMode) {
+      // Normal mode — nothing missing because loadConfig would have thrown.
+    } else {
+      if (!process.env.RPC_URL_MAINNET) missing.push("RPC_URL_MAINNET");
+      if (!process.env.PRIVATE_KEY) missing.push("PRIVATE_KEY");
+      if (!process.env.WEBHOOK_SECRET) missing.push("WEBHOOK_SECRET");
+      if (!process.env.TELEGRAM_BOT_TOKEN) missing.push("TELEGRAM_BOT_TOKEN");
+      if (!process.env.TELEGRAM_CHAT_ID) missing.push("TELEGRAM_CHAT_ID");
+    }
+    res.json({
+      setupMode: cfg.setupMode,
+      network: cfg.network,
+      walletPubkey: cfg.setupMode ? null : cfg.walletPubkey,
+      missingEnv: missing,
+      webhookUrl: `${_req.protocol}://${_req.get("host")}/webhook`,
+    });
+  });
+
+  // Serve the generator Pine file as a static asset. Dashboard reads it,
+  // injects the user's WEBHOOK_SECRET client-side, triggers a blob download.
+  app.get("/pine-source", (_req: Request, res: Response) => {
+    const possiblePaths = [
+      path.join(process.cwd(), "tradingview-strategy.pine"),
+      path.join(__dirname, "..", "..", "..", "tradingview-strategy.pine"),
+      path.join(__dirname, "..", "tradingview-strategy.pine"),
+    ];
+    const found = possiblePaths.find((p) => existsSync(p));
+    if (!found) {
+      res.status(500).json({ error: "Pine source not found in image" });
+      return;
+    }
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    createReadStream(found)
+      .on("error", () => {
+        if (!res.headersSent) res.status(500).end();
+      })
+      .pipe(res);
   });
 
   // CORS for dashboard-originated requests (/status, /pause, /resume).
@@ -243,6 +302,10 @@ async function main(): Promise<void> {
 
   // Dashboard-initiated pause. Halts new OPENS only; closes still flow through.
   app.post("/pause", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+    if (cfg.setupMode) {
+      res.status(503).json({ error: "setup_incomplete" });
+      return;
+    }
     if (isHalted()) {
       res.json({ ok: true, already: "halted", reason: haltReason() });
       return;
@@ -252,14 +315,48 @@ async function main(): Promise<void> {
   });
 
   app.post("/resume", corsForDashboard, requireDashboardAuth, (_req: Request, res: Response) => {
+    if (cfg.setupMode) {
+      res.status(503).json({ error: "setup_incomplete" });
+      return;
+    }
     clearHalt();
     res.json({ ok: true });
   });
 
-  // Always respond to preflight OPTIONS on the dashboard-touched routes.
+  // Preflight OPTIONS stay for the unlikely case a user self-hosts the
+  // dashboard on a different origin. Same-origin deploys never hit these.
   app.options("/status", corsForDashboard);
   app.options("/pause", corsForDashboard);
   app.options("/resume", corsForDashboard);
+
+  // Serve the bundled dashboard. In production the Dockerfile copies the
+  // Next.js static export into ./public/dashboard. In local dev the dir may
+  // not exist; we skip silently so the API-only workflow still works.
+  const DASHBOARD_DIR = path.join(__dirname, "..", "public", "dashboard");
+  if (existsSync(DASHBOARD_DIR)) {
+    app.use(express.static(DASHBOARD_DIR, { extensions: ["html"] }));
+    // SPA fallback: any non-API route returns the closest index.html. Next.js
+    // static export puts one per route dir, so we prefer exact route matches
+    // and only fall through to / when nothing else hits.
+    app.get(/^\/(?!api\/|webhook|pause|resume|health|status|export|pine-source).*/,
+      (req: Request, res: Response, next: () => void) => {
+        const candidate = path.join(DASHBOARD_DIR, req.path, "index.html");
+        if (existsSync(candidate)) {
+          res.sendFile(candidate);
+          return;
+        }
+        const root = path.join(DASHBOARD_DIR, "index.html");
+        if (existsSync(root)) {
+          res.sendFile(root);
+          return;
+        }
+        next();
+      }
+    );
+    console.log(`[boot] dashboard bundled — serving from ${DASHBOARD_DIR}`);
+  } else {
+    console.log(`[boot] dashboard not bundled (dir missing: ${DASHBOARD_DIR}) — API-only mode`);
+  }
 
   // GET /export?secret=<WEBHOOK_SECRET>
   // Streams a gzipped copy of the ledger.db file for off-site backup.
@@ -292,6 +389,13 @@ async function main(): Promise<void> {
   });
 
   app.post("/webhook", webhookLimiter, async (req: Request, res: Response) => {
+    if (cfg.setupMode) {
+      res.status(503).json({
+        error: "setup_incomplete",
+        message: "SETUP_MODE=true. Finish configuration in the dashboard, then unset SETUP_MODE on Railway.",
+      });
+      return;
+    }
     const result = validatePayload(req.body, cfg.webhookSecret);
     if (!result.ok) {
       console.warn(`[webhook] rejected: ${result.message}`);
@@ -313,7 +417,7 @@ async function main(): Promise<void> {
 
     // Track in-flight so graceful shutdown can wait for it
     track(
-      execute(signal, { cfg, backend, conn }).catch(async (e) => {
+      execute(signal, { cfg, backend: backend!, conn }).catch(async (e) => {
         console.error(`[executor] uncaught on signal=${signal.id}:`, e);
         await tg.failed(1, e?.message || String(e)).catch(() => {});
       })
