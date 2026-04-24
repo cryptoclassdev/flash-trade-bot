@@ -23,5 +23,8 @@
   },
   "devDependencies": {
     "turbo": "^2.5.0"
+  },
+  "overrides": {
+    "bignumber.js": "^9.1.2"
   }
 }
