@@ -11,7 +11,12 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@solana/pay": "^0.2.6",
+    "@solana/web3.js": "^1.98.4",
+    "bignumber.js": "^9.1.2",
+    "bs58": "^6.0.0",
     "next": "^15.1.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "shared": "*"
