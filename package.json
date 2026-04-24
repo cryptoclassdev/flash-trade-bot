@@ -2,40 +2,26 @@
   "name": "flash-trade-bot",
   "version": "0.1.0",
   "private": true,
-  "description": "TradingView webhook -> flash.trade automated trading bot",
-  "main": "dist/server.js",
+  "packageManager": "npm@10.8.2",
+  "description": "Level 3 Telegram-native Solana trading product. Monorepo root.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node --transpile-only src/server.ts",
-    "fire": "ts-node --transpile-only scripts/fire-test-webhook.ts",
-    "dryrun": "ts-node --transpile-only scripts/dry-run.ts",
-    "balance": "ts-node --transpile-only scripts/check-balance.ts",
-    "trades": "ts-node --transpile-only scripts/show-trades.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "TS_NODE_TRANSPILE_ONLY=true node --require ts-node/register --test tests/*.test.ts"
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "dryrun": "turbo run dryrun",
+    "fire": "npm run fire --workspace=webhook-server",
+    "balance": "npm run balance --workspace=webhook-server",
+    "trades": "npm run trades --workspace=webhook-server"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "@coral-xyz/anchor": "^0.29.0",
-    "@pythnetwork/client": "^2.22.0",
-    "@solana/spl-token": "^0.4.6",
-    "@solana/web3.js": "^1.95.0",
-    "axios": "^1.7.7",
-    "better-sqlite3": "^11.3.0",
-    "bs58": "^6.0.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.0",
-    "express-rate-limit": "^8.3.2",
-    "flash-sdk": "^2.39.0"
-  },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
-    "@types/express": "^4.17.21",
-    "@types/node": "^20.16.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.6.0"
+    "turbo": "^2.5.0"
   }
 }

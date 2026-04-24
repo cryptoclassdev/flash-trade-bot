@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const PINE_PATH = join(__dirname, "..", "tradingview-strategy.pine");
+const PINE_PATH = join(__dirname, "..", "..", "..", "tradingview-strategy.pine");
 
 test("Pine schema: secret is sourced from input, not a TradingView placeholder", () => {
   const src = readFileSync(PINE_PATH, "utf8");
