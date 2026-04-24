@@ -2,6 +2,9 @@
 
 import { PublicKey } from "@solana/web3.js";
 import { encodeURL } from "@solana/pay";
+// bignumber.js is a transitive dep of @solana/pay; we rely on the resolved
+// version via node_modules walk. Not listed as a direct dep because npm's
+// workspace resolution picks up conflicting majors and pollutes the tree.
 import BigNumber from "bignumber.js";
 import { USDC_MINT } from "./rpc";
 
