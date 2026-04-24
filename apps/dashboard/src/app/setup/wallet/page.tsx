@@ -11,6 +11,8 @@ import {
   type GeneratedWallet,
 } from "@/lib/wallet";
 import { writeWizardState } from "@/lib/storage";
+import { track } from "@/lib/analytics";
+import { TrackMount } from "@/components/TrackMount";
 
 export default function WalletPage() {
   const router = useRouter();
@@ -27,6 +29,7 @@ export default function WalletPage() {
     setWallet(generateWallet());
     setRevealed(false);
     setAcknowledged(false);
+    track("setup.wallet.generated");
   }
 
   function onDownload() {
@@ -54,15 +57,18 @@ export default function WalletPage() {
         setPasteError("You must acknowledge the security warning to continue.");
         return;
       }
+      track("setup.wallet.pasted");
       writeWizardState({ walletPubkey: parsed.pubkey });
       router.push("/setup/fund");
     } catch (e) {
+      track("error.wallet.invalid_key");
       setPasteError(e instanceof Error ? e.message : "Invalid key");
     }
   }
 
   return (
     <WizardLayout step={1} title="Create your trading wallet">
+      <TrackMount event="setup.started" />
       {!advanced && (
         <>
           <p className="mb-6 text-fg-muted">

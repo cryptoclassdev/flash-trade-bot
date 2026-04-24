@@ -10,6 +10,7 @@ import {
   sendTestMessage,
   validateTokenShape,
 } from "@/lib/telegram";
+import { track } from "@/lib/analytics";
 
 export default function TelegramPage() {
   const router = useRouter();
@@ -47,7 +48,11 @@ export default function TelegramPage() {
       setStatus("ready");
     } catch (e) {
       setStatus("fail");
-      setMessage(e instanceof Error ? e.message : "Telegram API error");
+      const msg = e instanceof Error ? e.message : "Telegram API error";
+      setMessage(msg);
+      if (msg.toLowerCase().includes("no messages")) {
+        track("error.telegram.no_updates");
+      }
     }
   }
 
@@ -61,6 +66,7 @@ export default function TelegramPage() {
       setMessage(
         "Test message sent. Check Telegram — you should see it within a second.",
       );
+      track("setup.telegram.validated");
     } catch (e) {
       setStatus("fail");
       setMessage(e instanceof Error ? e.message : "Send failed");

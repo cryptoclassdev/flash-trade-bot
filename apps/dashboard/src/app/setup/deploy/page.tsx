@@ -6,6 +6,7 @@ import { WizardLayout } from "@/components/WizardLayout";
 import { CopyButton } from "@/components/CopyButton";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { buildRailwayDeployUrl, generateHexSecret } from "@/lib/railway";
+import { track } from "@/lib/analytics";
 import { STRATEGY_DEFAULTS } from "shared";
 import type { BotEnv } from "shared";
 
@@ -106,11 +107,13 @@ export default function DeployPage() {
           ? "Bot is live on mainnet-beta."
           : `Bot is running (network=${json.network}).`,
       );
+      track("setup.bot.verified");
     } catch (e) {
       setHealthStatus("fail");
       setHealthMessage(
         e instanceof Error ? e.message : "Could not reach the bot.",
       );
+      track("error.railway.health_fail");
     }
   }
 

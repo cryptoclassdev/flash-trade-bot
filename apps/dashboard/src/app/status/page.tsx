@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { BotClient, type BotClientError } from "@/lib/bot-client";
+import { track } from "@/lib/analytics";
+import { TrackMount } from "@/components/TrackMount";
 import type { StatusResponse } from "shared";
 
 const POLL_MS = 15_000;
@@ -42,6 +44,9 @@ export default function StatusPage() {
       setLastUpdated(Date.now());
     } catch (e) {
       setError(e as BotClientError);
+      track("error.status.poll_fail", {
+        kind: (e as BotClientError).kind,
+      });
     } finally {
       setLoading(false);
     }
@@ -60,8 +65,10 @@ export default function StatusPage() {
     try {
       const client = new BotClient(railwayUrl, dashboardToken || null);
       if (status.halt.halted) {
+        track("status.resume.clicked");
         await client.resume();
       } else {
+        track("status.pause.clicked");
         await client.pause();
       }
       await refresh();
@@ -142,6 +149,7 @@ export default function StatusPage() {
 
   return (
     <Frame>
+      <TrackMount event="status.visited" />
       <div className="mb-6 flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold">Status</h1>
         <span className="text-xs text-fg-subtle">
