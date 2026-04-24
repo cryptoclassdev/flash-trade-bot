@@ -57,13 +57,13 @@ TradingView Pine strategy
 Railway edge (HTTPS, public URL)
     │
     ▼
-Express server (src/server.ts)
+Express server (apps/webhook-server/src/server.ts)
     │  verify secret → dedupe → insert signal → 202
     ▼
-Executor (src/executor.ts)
+Executor (apps/webhook-server/src/executor.ts)
     │  derive intent (flat→long = open, long→flat = close, long→short = flip)
     ▼
-ApiBackend (src/flash.ts)
+ApiBackend (apps/webhook-server/src/flash.ts)
     │  POST flashapi.trade/transaction-builder/*
     │  sign locally with your keypair
     │  submit via your Helius RPC
@@ -194,7 +194,7 @@ That's one alert, handling all buys, sells, and flips for that strategy.
 
 ## Environment variables
 
-See `.env.example` for the full template. Defaults in **bold**, secrets in *italic*.
+See `apps/webhook-server/.env.example` for the full template. Defaults in **bold**, secrets in *italic*.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
@@ -289,6 +289,8 @@ rm /data/ledger.db /data/ledger.db-shm /data/ledger.db-wal
 
 Node 20 required (`better-sqlite3` prebuilt binaries). Use nvm: `nvm use 20`.
 
+This repo is a [Turborepo](https://turborepo.com) monorepo. The trading bot lives in `apps/webhook-server/`. Future Telegram bot + Mini App will live in `apps/bot/` and `apps/mini-app/`. All commands below run from the repo root and delegate to turbo.
+
 ```bash
 npm install
 npm run typecheck
@@ -297,9 +299,9 @@ npm run typecheck
 npm run dryrun
 
 # Full server boot (requires a complete .env):
-cp .env.example .env
-chmod 600 .env
-# edit .env with your values
+cp apps/webhook-server/.env.example apps/webhook-server/.env
+chmod 600 apps/webhook-server/.env
+# edit apps/webhook-server/.env with your values
 npm run dev
 
 # Helpers:
