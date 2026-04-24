@@ -241,7 +241,7 @@ async function main(): Promise<void> {
     next();
   };
 
-  app.get("/status", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+  app.get("/api/status", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
     // Wallet balance lookup from the configured RPC. Non-fatal if it fails —
     // dashboard can still render the rest.
     let solBalance = 0;
@@ -301,7 +301,7 @@ async function main(): Promise<void> {
   });
 
   // Dashboard-initiated pause. Halts new OPENS only; closes still flow through.
-  app.post("/pause", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
+  app.post("/api/pause", corsForDashboard, requireDashboardAuth, async (_req: Request, res: Response) => {
     if (cfg.setupMode) {
       res.status(503).json({ error: "setup_incomplete" });
       return;
@@ -314,7 +314,7 @@ async function main(): Promise<void> {
     res.json({ ok: true });
   });
 
-  app.post("/resume", corsForDashboard, requireDashboardAuth, (_req: Request, res: Response) => {
+  app.post("/api/resume", corsForDashboard, requireDashboardAuth, (_req: Request, res: Response) => {
     if (cfg.setupMode) {
       res.status(503).json({ error: "setup_incomplete" });
       return;
@@ -325,9 +325,9 @@ async function main(): Promise<void> {
 
   // Preflight OPTIONS stay for the unlikely case a user self-hosts the
   // dashboard on a different origin. Same-origin deploys never hit these.
-  app.options("/status", corsForDashboard);
-  app.options("/pause", corsForDashboard);
-  app.options("/resume", corsForDashboard);
+  app.options("/api/status", corsForDashboard);
+  app.options("/api/pause", corsForDashboard);
+  app.options("/api/resume", corsForDashboard);
 
   // Serve the bundled dashboard. In production the Dockerfile copies the
   // Next.js static export into ./public/dashboard. In local dev the dir may
@@ -338,7 +338,7 @@ async function main(): Promise<void> {
     // SPA fallback: any non-API route returns the closest index.html. Next.js
     // static export puts one per route dir, so we prefer exact route matches
     // and only fall through to / when nothing else hits.
-    app.get(/^\/(?!api\/|webhook|pause|resume|health|status|export|pine-source).*/,
+    app.get(/^\/(?!api\/|webhook|health|export|pine-source).*/,
       (req: Request, res: Response, next: () => void) => {
         const candidate = path.join(DASHBOARD_DIR, req.path, "index.html");
         if (existsSync(candidate)) {

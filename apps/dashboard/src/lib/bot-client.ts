@@ -22,18 +22,18 @@ export class BotClient {
   }
 
   async status(): Promise<StatusResponse> {
-    const res = await this.fetchJson(`${this.baseUrl}/status`);
+    const res = await this.fetchJson(`${this.baseUrl}/api/status`);
     return res as StatusResponse;
   }
 
   async pause(): Promise<{ ok: boolean }> {
-    return this.fetchJson(`${this.baseUrl}/pause`, { method: "POST" }) as Promise<{
+    return this.fetchJson(`${this.baseUrl}/api/pause`, { method: "POST" }) as Promise<{
       ok: boolean;
     }>;
   }
 
   async resume(): Promise<{ ok: boolean }> {
-    return this.fetchJson(`${this.baseUrl}/resume`, {
+    return this.fetchJson(`${this.baseUrl}/api/resume`, {
       method: "POST",
     }) as Promise<{ ok: boolean }>;
   }
