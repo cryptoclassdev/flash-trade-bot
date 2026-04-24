@@ -1,6 +1,12 @@
 # Deploy and Host flash-trade-bot on Railway
 
-flash-trade-bot is a self-hosted trading bot that executes [flash.trade](https://flash.trade) perpetual-futures trades on Solana mainnet, driven by TradingView strategy alerts. It ships with a guided-setup web dashboard bundled into the same service — one Railway deploy, one URL, no separate onboarding infrastructure. You click Deploy, open the URL Railway gives you, and a browser wizard walks you through wallet generation, funding, Helius RPC, Telegram bot, TradingView alert, and live status monitoring.
+flash-trade-bot is a self-hosted trading bot that executes [flash.trade](https://flash.trade) perpetual-futures trades on Solana mainnet, driven by TradingView strategy alerts. It ships with a guided-setup web dashboard bundled into the same service — one Railway deploy, one URL, no separate onboarding infrastructure.
+
+## 👉 After Deploy: Open Your Dashboard
+
+**When the build finishes**, Railway will assign your service a public URL. Click **"View"** on the service (or open the URL from the **Settings → Domains** tab) in a new browser tab. That URL is your **setup dashboard** — a browser wizard that walks you through wallet generation, funding, Helius RPC, Telegram bot, TradingView alert, and live status monitoring.
+
+You click Deploy → Railway builds (~3 min) → you open the URL Railway gives you → the dashboard guides you the rest of the way.
 
 ## About Hosting flash-trade-bot
 
