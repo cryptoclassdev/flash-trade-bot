@@ -301,12 +301,14 @@ function Frame({ children }: { children: React.ReactNode }) {
         >
           ← flash-trade-bot
         </Link>
-        <Link
-          href="/setup/wallet"
-          className="text-xs text-fg-subtle hover:text-fg-muted"
-        >
-          Re-run setup
-        </Link>
+        <div className="flex gap-4 text-xs text-fg-subtle">
+          <Link href="/strategies" className="hover:text-fg-muted">
+            Strategy library
+          </Link>
+          <Link href="/setup/wallet" className="hover:text-fg-muted">
+            Re-run setup
+          </Link>
+        </div>
       </header>
       <div className="flex-1">{children}</div>
     </main>

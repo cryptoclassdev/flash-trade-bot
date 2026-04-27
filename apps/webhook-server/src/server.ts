@@ -177,21 +177,62 @@ async function main(): Promise<void> {
     });
   });
 
-  // Serve the generator Pine file as a static asset. Dashboard reads it,
-  // injects the user's WEBHOOK_SECRET client-side, triggers a blob download.
-  app.get("/pine-source", (_req: Request, res: Response) => {
-    const possiblePaths = [
-      path.join(process.cwd(), "tradingview-strategy.pine"),
-      path.join(__dirname, "..", "..", "..", "tradingview-strategy.pine"),
-      path.join(__dirname, "..", "tradingview-strategy.pine"),
+  // Strategy library: registry + per-strategy Pine source.
+  // The Dockerfile copies strategies/ into the runtime image. Locally,
+  // strategies/ lives at repo root (3 levels up from src/).
+  function findStrategiesDir(): string | null {
+    const candidates = [
+      path.join(process.cwd(), "strategies"),
+      path.join(__dirname, "..", "strategies"),
+      path.join(__dirname, "..", "..", "..", "strategies"),
     ];
-    const found = possiblePaths.find((p) => existsSync(p));
-    if (!found) {
-      res.status(500).json({ error: "Pine source not found in image" });
+    return candidates.find((p) => existsSync(p)) || null;
+  }
+
+  app.get("/api/strategies", (_req: Request, res: Response) => {
+    const dir = findStrategiesDir();
+    if (!dir) {
+      res.status(500).json({ error: "strategies directory not found in image" });
+      return;
+    }
+    const registryPath = path.join(dir, "registry.json");
+    if (!existsSync(registryPath)) {
+      res.status(500).json({ error: "strategies/registry.json not found" });
+      return;
+    }
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    createReadStream(registryPath)
+      .on("error", () => {
+        if (!res.headersSent) res.status(500).end();
+      })
+      .pipe(res);
+  });
+
+  // Serve a strategy's Pine source. Dashboard reads it, injects the user's
+  // WEBHOOK_SECRET client-side, triggers a blob download.
+  // ?strategy=<id> selects which file. Defaults to rsi-divergence for
+  // backward compatibility with v0 dashboard calls.
+  app.get("/pine-source", (req: Request, res: Response) => {
+    const dir = findStrategiesDir();
+    if (!dir) {
+      res.status(500).json({ error: "strategies directory not found in image" });
+      return;
+    }
+    const requestedId = typeof req.query.strategy === "string"
+      ? req.query.strategy
+      : "rsi-divergence";
+    // Whitelist by ID format to prevent path traversal.
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(requestedId)) {
+      res.status(400).json({ error: "invalid strategy id" });
+      return;
+    }
+    const filePath = path.join(dir, `${requestedId}.pine`);
+    if (!existsSync(filePath)) {
+      res.status(404).json({ error: `strategy '${requestedId}' not found` });
       return;
     }
     res.setHeader("content-type", "text/plain; charset=utf-8");
-    createReadStream(found)
+    createReadStream(filePath)
       .on("error", () => {
         if (!res.headersSent) res.status(500).end();
       })

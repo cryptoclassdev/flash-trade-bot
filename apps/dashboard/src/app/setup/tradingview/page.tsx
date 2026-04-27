@@ -6,7 +6,7 @@ import { WizardLayout } from "@/components/WizardLayout";
 import { CopyButton } from "@/components/CopyButton";
 import { readWizardState, writeWizardState } from "@/lib/storage";
 import { track } from "@/lib/analytics";
-import { generatePineFile } from "shared/pine-gen";
+import { downloadStrategyPine } from "@/lib/strategies";
 
 export default function TradingViewPage() {
   const router = useRouter();
@@ -37,20 +37,7 @@ export default function TradingViewPage() {
     setDownloading(true);
     setDownloadError(null);
     try {
-      const res = await fetch("/pine-source");
-      if (!res.ok) throw new Error(`Bot returned HTTP ${res.status}`);
-      const source = await res.text();
-      const generated = generatePineFile({
-        webhookSecret,
-        pineSource: source,
-      });
-      const blob = new Blob([generated], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "flash-trade-bot-rsi-divergence.pine";
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadStrategyPine("rsi-divergence", webhookSecret);
     } catch (e) {
       setDownloadError(
         e instanceof Error ? e.message : "Could not generate Pine file",

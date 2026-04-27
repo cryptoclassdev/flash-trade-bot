@@ -1,0 +1,12 @@
+[
+  {
+    "id": "rsi-divergence",
+    "name": "RSI Divergence",
+    "description": "Detects RSI divergence on price pivots. Entries on confirmed regular divergence with optional middle-zone filtering and per-side RSI range gates. Wick stop on the signal candle, breakeven move at +1%, milestone trailing stops at 5/10/15/20/25% gains. Reverses on opposite signal.",
+    "asset": "BTC",
+    "timeframe": "5m",
+    "longShort": "both",
+    "file": "rsi-divergence.pine",
+    "tags": ["divergence", "rsi", "trend-reversal"]
+  }
+]
