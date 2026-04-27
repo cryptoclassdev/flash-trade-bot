@@ -30,11 +30,12 @@ Companion documents:
 ## Orientation
 
 - Directory name is `rsi-divergence-bot`; the package itself is `flash-trade-bot`. Same code, legacy naming.
-- This is a **Turborepo monorepo**. Today: `apps/webhook-server/` (the trading bot). In flight per `DASHBOARD-PLAN.md`: `apps/dashboard/` (Next.js 14 on Vercel) + `packages/shared/` (Pine generator, env schema, status types). Root `package.json` only carries `turbo` — all runtime deps live in each app's own `package.json`. Pine strategy lives at repo root (`tradingview-strategy.pine`) because it is a cross-cutting asset.
-- This is a **live-money trading bot**. Current codebase is the v0 Railway template with the in-flight dashboard layer. Per `PRD.md` v2.0, the execution direction is self-host + guided dashboard (not Level 3 managed — that's deferred pending dashboard validation).
+- This is a **Turborepo monorepo** with three workspaces: `apps/webhook-server/` (the trading bot), `apps/dashboard/` (Next.js 15 / React 19 on Vercel — guided self-host setup + live status, runs on port 3001), and `packages/shared/` (Pine generator, env schema, status types — consumed via `"shared": "*"` workspace dep). Root `package.json` only carries `turbo` — all runtime deps live in each workspace's own `package.json`.
+- The `strategies/` directory at repo root is the strategy library: `registry.json` (catalog metadata) + per-strategy `*.pine` files + `AUTHORING.md`. The dashboard `/strategies` page reads from `registry.json`. The legacy `tradingview-strategy.pine` at repo root is the original RSI Divergence reference and predates the library — keep both in sync if you change the algorithm.
+- This is a **live-money trading bot**. Per `PRD.md` v2.0, the execution direction is self-host + guided dashboard (not Level 3 managed — that's deferred pending dashboard validation).
 - Treat every change as production-critical. Users deploy real money against this code.
 - Read `SECURITY-NOTES.md` before touching anything related to `.env`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, or wallet handling.
-- Tests live in `apps/webhook-server/tests/*.test.ts` run via `npm test` (turbo). `apps/webhook-server/scripts/dry-run.ts` additionally hits the real mainnet transaction-builder API to validate the `ApiBackend` shape without signing.
+- Tests live in `apps/webhook-server/tests/*.test.ts` and run via `npm test` (turbo dispatches to `node --test` with ts-node/register). `apps/webhook-server/scripts/dry-run.ts` additionally hits the real mainnet transaction-builder API to validate the `ApiBackend` shape without signing.
 
 ## Commands
 
@@ -45,13 +46,18 @@ All scripts run through `ts-node --transpile-only` except `start`, which runs co
 | `npm run dev` | Start the webhook server via ts-node (binds `127.0.0.1:PORT`, default 3000). |
 | `npm run build` | `tsc` → `dist/`. |
 | `npm start` | Run the compiled server from `dist/server.js`. |
-| `npm run typecheck` | `tsc --noEmit`. Use this as the only "lint" — no ESLint is configured. |
+| `npm run typecheck` | `tsc --noEmit` across the monorepo. The webhook-server has no ESLint; the dashboard uses `next lint`. |
+| `npm test` | Run all webhook-server tests via `node --test` with ts-node/register. |
 | `npm run dryrun` | API-shape validation against mainnet `/transaction-builder`. Forces `DRY_RUN_ONLY=true` and never loads `PRIVATE_KEY`. |
 | `npm run fire -- --action buy --market_position long --prev_market_position flat` | Fire a local test webhook at `127.0.0.1:$PORT/webhook`. Reads `WEBHOOK_SECRET` from `.env`. |
 | `npm run balance` | Print SOL + USDC balance for the configured wallet. |
 | `npm run trades` | Dump recent signals, trades, closed positions, open positions, realized PnL from `ledger.db`. |
 
-There is no single-test runner because there are no tests.
+Run a single test file from the webhook-server workspace:
+
+```
+cd apps/webhook-server && TS_NODE_TRANSPILE_ONLY=true node --require ts-node/register --test tests/derive-intent.test.ts
+```
 
 ## Required environment (mainnet)
 
