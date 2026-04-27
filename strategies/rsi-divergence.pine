@@ -1,0 +1,587 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © RSI Divergence Strategy - Entry A+2 with Wick Stop, Breakeven Move & Milestone TSL
+//
+// flash-trade-bot integration: emits webhook-formatted alert() JSON on every
+// position transition (entry / close / flip / stop). The setup dashboard
+// injects WEBHOOK_SECRET as the input default when generating this file.
+
+//@version=6
+
+strategy("Flash Trade Bot - RSI Divergence (BTC)",
+     overlay              = true,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 50,
+     pyramiding           = 0,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.05,
+     slippage             = 2,
+     margin_long          = 20,
+     margin_short         = 20,
+     calc_on_every_tick   = false,
+     process_orders_on_close = false,
+     max_lines_count      = 500,
+     max_labels_count     = 500)
+
+// ============================================================================
+// BOT INTEGRATION
+// The setup dashboard at your Railway URL pre-fills WEBHOOK_SECRET when you
+// download this file via /pine-source. Do not paste a secret inline.
+// ============================================================================
+
+WEBHOOK_SECRET = input.string("", "Webhook Secret (from your bot)", confirm=true, group="Bot Integration",
+     tooltip="Set this to the WEBHOOK_SECRET shown on your dashboard's TradingView screen. The script refuses to load if empty.")
+
+if barstate.isfirst and WEBHOOK_SECRET == ""
+    runtime.error("WEBHOOK_SECRET input is empty. Re-download the Pine file from your dashboard, or paste the secret manually in the Inputs dialog.")
+
+// Build the alert JSON the bot's verify.ts expects. Schema is fixed —
+// see apps/webhook-server/tests/pine-schema.test.ts for invariants.
+alertJson(string action, string nextPos, string prevPos, string comment) =>
+    '{"secret":"' + WEBHOOK_SECRET + '"' +
+    ',"id":"' + str.tostring(time) + '-' + action + '-' + nextPos + '"' +
+    ',"action":"' + action + '"' +
+    ',"ticker":"' + syminfo.ticker + '"' +
+    ',"contracts":"' + str.tostring(strategy.position_size) + '"' +
+    ',"price":"' + str.tostring(close) + '"' +
+    ',"position_size_after":"' + str.tostring(strategy.position_size) + '"' +
+    ',"market_position":"' + nextPos + '"' +
+    ',"prev_market_position":"' + prevPos + '"' +
+    ',"order_comment":"' + comment + '"' +
+    ',"time":"' + str.tostring(time) + '"}'
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// --- Backtest window ---
+useDateRange   = input.bool(false, "Limit Backtest Date Range", group="Backtest Window")
+startDate      = input.time(timestamp("2024-01-01 00:00"), "Start Date", group="Backtest Window")
+endDate        = input.time(timestamp("2099-12-31 00:00"), "End Date",   group="Backtest Window")
+inDateWindow   = not useDateRange or (time >= startDate and time <= endDate)
+
+// --- RSI ---
+rsiLen         = input.int(14, "RSI Length", minval=2, group="RSI Settings")
+rsiSource      = input.source(close, "RSI Source", group="RSI Settings")
+
+// --- Pivots ---
+pivotLeftBars  = input.int(3, "Pivot Left Bars", minval=2, maxval=30, group="Pivot Settings")
+pivotRightBars = input.int(2, "Pivot Right Bars", minval=1, maxval=30, group="Pivot Settings")
+divMaxBars     = input.int(100, "Max Bars Between Pivots", minval=10, maxval=300, group="Pivot Settings")
+divMinRsiDiff  = input.float(1.0, "Min RSI Difference", minval=0.0, maxval=30.0, step=0.5, group="Pivot Settings")
+recentLookback = input.int(10, "Live Lookback Bars", minval=3, maxval=30, group="Pivot Settings")
+
+// --- Filters ---
+filterMiddleZone  = input.bool(true, "Filter Middle Zone Divergences (RSI 45-55)", group="Filters")
+rsiLowerThreshold = input.float(45.0, "Middle Zone Lower Threshold", minval=30.0, maxval=50.0, step=1.0, group="Filters")
+rsiUpperThreshold = input.float(55.0, "Middle Zone Upper Threshold", minval=50.0, maxval=70.0, step=1.0, group="Filters")
+
+useBullRsiZone = input.bool(true,  "Restrict Bullish Divergence to RSI Range", tooltip="If ON, bullish divergences are only valid when BOTH swing lows' RSI values fall within the range below.", group="Bullish RSI Zone")
+bullLowerRSI   = input.float(0.0,  "Bullish Lower RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bullish RSI Zone")
+bullUpperRSI   = input.float(50.0, "Bullish Upper RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bullish RSI Zone")
+
+useBearRsiZone = input.bool(true,   "Restrict Bearish Divergence to RSI Range", tooltip="If ON, bearish divergences are only valid when BOTH swing highs' RSI values fall within the range below.", group="Bearish RSI Zone")
+bearLowerRSI   = input.float(50.0,  "Bearish Lower RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bearish RSI Zone")
+bearUpperRSI   = input.float(100.0, "Bearish Upper RSI Limit", minval=0.0, maxval=100.0, step=1.0, group="Bearish RSI Zone")
+
+// --- Divergence display ---
+showRegBull    = input.bool(true, "Show Regular Bullish Divergence", group="Divergence Display")
+showRegBear    = input.bool(true, "Show Regular Bearish Divergence", group="Divergence Display")
+showHidBull    = input.bool(true, "Show Hidden Bullish Divergence",  group="Divergence Display")
+showHidBear    = input.bool(true, "Show Hidden Bearish Divergence",  group="Divergence Display")
+
+// --- Trade settings ---
+tradeLongs     = input.bool(true, "Enable Long Trades", group="Trade Settings")
+tradeShorts    = input.bool(true, "Enable Short Trades", group="Trade Settings")
+reverseOnSignal= input.bool(true, "Reverse Position on Opposite Signal", group="Trade Settings")
+useLiveExits   = input.bool(true, "Use Live Divergences for Exits", group="Trade Settings")
+
+// --- Stop loss ---
+useSignalWickStop = input.bool(true, "Use Signal Candle Wick Stop", group="Stop Loss")
+wickBufferPct     = input.float(0.2, "Wick Stop Buffer %", minval=0.0, maxval=5.0, step=0.05, group="Stop Loss")
+
+// --- Breakeven move ---
+useBreakevenMove = input.bool(true, "Move SL to Breakeven at +X%", tooltip="Once price moves X% in favor, the wick stop moves to entry price, making the trade risk-free.", group="Breakeven Move")
+breakevenTrigger = input.float(1.0, "Breakeven Trigger %", minval=0.1, step=0.1, group="Breakeven Move")
+
+// --- Trailing stop ---
+useMilestoneTSL  = input.bool(true, "Use Milestone Trailing Stop", tooltip="Once price reaches each milestone (5%, 10%, 15%, 20%, 25%), the stop loss locks in at that milestone. Never moves backward.", group="Trailing Stop")
+tslStep1         = input.float(5.0,  "Milestone 1 %", minval=0.5, step=0.5, group="Trailing Stop")
+tslStep2         = input.float(10.0, "Milestone 2 %", minval=0.5, step=0.5, group="Trailing Stop")
+tslStep3         = input.float(15.0, "Milestone 3 %", minval=0.5, step=0.5, group="Trailing Stop")
+tslStep4         = input.float(20.0, "Milestone 4 %", minval=0.5, step=0.5, group="Trailing Stop")
+tslStep5         = input.float(25.0, "Milestone 5 %", minval=0.5, step=0.5, group="Trailing Stop")
+
+// --- Display ---
+showLines           = input.bool(true, "Show Divergence Lines", group="Display")
+showSignalTriangles = input.bool(true, "Show Signal Candle Triangles", group="Display")
+showLive            = input.bool(true, "Show Live/Forming Divergences", group="Display")
+showSLLines         = input.bool(true, "Show Stop Loss Lines While In Trade", group="Display")
+showTSLLines        = input.bool(true, "Show Trailing Stop Lines", group="Display")
+showExitLabels      = input.bool(true, "Show Exit Labels (P&L %)", group="Display")
+exitLabelOffsetPct  = input.float(1.5, "Exit Label Offset %", minval=0.1, maxval=10.0, step=0.1, tooltip="Distance from the exit candle as a % of price. Increase if labels overlap native entry/exit markers.", group="Display")
+showBELine          = input.bool(true, "Highlight Breakeven Move", group="Display")
+
+// --- Colors ---
+regBullCol     = input.color(color.green,  "Regular Bullish Color", group="Colors")
+regBearCol     = input.color(color.red,    "Regular Bearish Color", group="Colors")
+hidBullCol     = input.color(color.lime,   "Hidden Bullish Color",  group="Colors")
+hidBearCol     = input.color(color.orange, "Hidden Bearish Color",  group="Colors")
+liveCol        = input.color(color.yellow, "Live/Forming Divergence Color", group="Colors")
+slLineCol      = input.color(color.red,    "Stop Loss Line Color", group="Colors")
+tslLineCol     = input.color(color.aqua,   "Trailing Stop Line Color", group="Colors")
+beLineCol      = input.color(color.yellow, "Breakeven SL Line Color", group="Colors")
+winLabelCol    = input.color(color.new(color.green, 20), "Winning Exit Label Color", group="Colors")
+lossLabelCol   = input.color(color.new(color.red, 20),   "Losing Exit Label Color",  group="Colors")
+beLabelCol     = input.color(color.new(color.gray, 20),  "Breakeven Exit Label Color", group="Colors")
+
+// ============================================================================
+// RSI & PIVOTS
+// ============================================================================
+
+rsiVal         = ta.rsi(rsiSource, rsiLen)
+pricePivotLow  = ta.pivotlow(low, pivotLeftBars, pivotRightBars)
+pricePivotHigh = ta.pivothigh(high, pivotLeftBars, pivotRightBars)
+
+// ============================================================================
+// SWING LOW TRACKING — BULLISH DIVERGENCES
+// ============================================================================
+
+var float prevSLPrice = na
+var int   prevSLBar   = na
+var float prevSLRsi   = na
+var float currSLPrice = na
+var int   currSLBar   = na
+var float currSLRsi   = na
+
+regBullDiv = false
+hidBullDiv = false
+
+if not na(pricePivotLow)
+    prevSLPrice := currSLPrice
+    prevSLBar   := currSLBar
+    prevSLRsi   := currSLRsi
+    currSLPrice := low[pivotRightBars]
+    currSLBar   := bar_index - pivotRightBars
+    currSLRsi   := rsiVal[pivotRightBars]
+
+    if not na(prevSLPrice) and not na(prevSLRsi)
+        barsB = currSLBar - prevSLBar
+        rsiD  = math.abs(currSLRsi - prevSLRsi)
+        bothInMiddleZone = filterMiddleZone and (prevSLRsi >= rsiLowerThreshold and prevSLRsi <= rsiUpperThreshold) and (currSLRsi >= rsiLowerThreshold and currSLRsi <= rsiUpperThreshold)
+        bullZoneOk = not useBullRsiZone or (prevSLRsi >= bullLowerRSI and prevSLRsi <= bullUpperRSI and currSLRsi >= bullLowerRSI and currSLRsi <= bullUpperRSI)
+
+        if barsB > 0 and barsB <= divMaxBars and rsiD >= divMinRsiDiff and not bothInMiddleZone and bullZoneOk
+            if currSLPrice < prevSLPrice and currSLRsi > prevSLRsi
+                regBullDiv := true
+            if currSLPrice > prevSLPrice and currSLRsi < prevSLRsi
+                hidBullDiv := true
+
+// ============================================================================
+// SWING HIGH TRACKING — BEARISH DIVERGENCES
+// ============================================================================
+
+var float prevSHPrice = na
+var int   prevSHBar   = na
+var float prevSHRsi   = na
+var float currSHPrice = na
+var int   currSHBar   = na
+var float currSHRsi   = na
+
+regBearDiv = false
+hidBearDiv = false
+
+if not na(pricePivotHigh)
+    prevSHPrice := currSHPrice
+    prevSHBar   := currSHBar
+    prevSHRsi   := currSHRsi
+    currSHPrice := high[pivotRightBars]
+    currSHBar   := bar_index - pivotRightBars
+    currSHRsi   := rsiVal[pivotRightBars]
+
+    if not na(prevSHPrice) and not na(prevSHRsi)
+        barsB = currSHBar - prevSHBar
+        rsiD  = math.abs(currSHRsi - prevSHRsi)
+        bothInMiddleZone = filterMiddleZone and (prevSHRsi >= rsiLowerThreshold and prevSHRsi <= rsiUpperThreshold) and (currSHRsi >= rsiLowerThreshold and currSHRsi <= rsiUpperThreshold)
+        bearZoneOk = not useBearRsiZone or (prevSHRsi >= bearLowerRSI and prevSHRsi <= bearUpperRSI and currSHRsi >= bearLowerRSI and currSHRsi <= bearUpperRSI)
+
+        if barsB > 0 and barsB <= divMaxBars and rsiD >= divMinRsiDiff and not bothInMiddleZone and bearZoneOk
+            if currSHPrice > prevSHPrice and currSHRsi < prevSHRsi
+                regBearDiv := true
+            if currSHPrice < prevSHPrice and currSHRsi > prevSHRsi
+                hidBearDiv := true
+
+// ============================================================================
+// LIVE DIVERGENCES
+// ============================================================================
+
+recentLowest    = ta.lowest(low, recentLookback)
+recentLowestRsi = ta.valuewhen(low == recentLowest, rsiVal, 0)
+recentHighest   = ta.highest(high, recentLookback)
+recentHighestRsi = ta.valuewhen(high == recentHighest, rsiVal, 0)
+
+liveBullish = false
+if showLive and not na(currSLPrice) and not na(currSLRsi)
+    barsFromSwing = bar_index - currSLBar
+    rsiDiffLive = math.abs(recentLowestRsi - currSLRsi)
+    bothInMiddleZoneLive = filterMiddleZone and (recentLowestRsi >= rsiLowerThreshold and recentLowestRsi <= rsiUpperThreshold) and (currSLRsi >= rsiLowerThreshold and currSLRsi <= rsiUpperThreshold)
+    bullZoneOkLive = not useBullRsiZone or (recentLowestRsi >= bullLowerRSI and recentLowestRsi <= bullUpperRSI and currSLRsi >= bullLowerRSI and currSLRsi <= bullUpperRSI)
+    if recentLowest < currSLPrice and recentLowestRsi > currSLRsi and barsFromSwing <= divMaxBars and barsFromSwing > 0 and rsiDiffLive >= divMinRsiDiff and not bothInMiddleZoneLive and bullZoneOkLive
+        liveBullish := true
+
+liveBearish = false
+if showLive and not na(currSHPrice) and not na(currSHRsi)
+    barsFromSwing = bar_index - currSHBar
+    rsiDiffLive = math.abs(recentHighestRsi - currSHRsi)
+    bothInMiddleZoneLive = filterMiddleZone and (recentHighestRsi >= rsiLowerThreshold and recentHighestRsi <= rsiUpperThreshold) and (currSHRsi >= rsiLowerThreshold and currSHRsi <= rsiUpperThreshold)
+    bearZoneOkLive = not useBearRsiZone or (recentHighestRsi >= bearLowerRSI and recentHighestRsi <= bearUpperRSI and currSHRsi >= bearLowerRSI and currSHRsi <= bearUpperRSI)
+    if recentHighest > currSHPrice and recentHighestRsi < currSHRsi and barsFromSwing <= divMaxBars and barsFromSwing > 0 and rsiDiffLive >= divMinRsiDiff and not bothInMiddleZoneLive and bearZoneOkLive
+        liveBearish := true
+
+// ============================================================================
+// COMBINED SIGNALS
+// ============================================================================
+
+bullSignalConfirmed = regBullDiv
+bearSignalConfirmed = regBearDiv
+
+bullExitSignal = useLiveExits ? (liveBullish or bullSignalConfirmed) : bullSignalConfirmed
+bearExitSignal = useLiveExits ? (liveBearish or bearSignalConfirmed) : bearSignalConfirmed
+
+// ============================================================================
+// DIVERGENCE LINE VISUALS
+// ============================================================================
+
+if regBullDiv and showRegBull and showLines
+    line.new(prevSLBar, prevSLPrice, currSLBar, currSLPrice, color=regBullCol, width=2, style=line.style_solid)
+if hidBullDiv and showHidBull and showLines
+    line.new(prevSLBar, prevSLPrice, currSLBar, currSLPrice, color=hidBullCol, width=2, style=line.style_dashed)
+if regBearDiv and showRegBear and showLines
+    line.new(prevSHBar, prevSHPrice, currSHBar, currSHPrice, color=regBearCol, width=2, style=line.style_solid)
+if hidBearDiv and showHidBear and showLines
+    line.new(prevSHBar, prevSHPrice, currSHBar, currSHPrice, color=hidBearCol, width=2, style=line.style_dashed)
+
+if regBullDiv and showRegBull and showSignalTriangles
+    label.new(currSLBar, currSLPrice, style=label.style_triangleup, color=regBullCol, size=size.small, yloc=yloc.belowbar)
+if hidBullDiv and showHidBull and showSignalTriangles
+    label.new(currSLBar, currSLPrice, style=label.style_triangleup, color=hidBullCol, size=size.tiny, yloc=yloc.belowbar)
+if regBearDiv and showRegBear and showSignalTriangles
+    label.new(currSHBar, currSHPrice, style=label.style_triangledown, color=regBearCol, size=size.small, yloc=yloc.abovebar)
+if hidBearDiv and showHidBear and showSignalTriangles
+    label.new(currSHBar, currSHPrice, style=label.style_triangledown, color=hidBearCol, size=size.tiny, yloc=yloc.abovebar)
+
+plotshape(showLive and liveBullish and not regBullDiv and not hidBullDiv, title="Live Bullish", style=shape.triangleup, location=location.belowbar, color=liveCol, size=size.tiny)
+plotshape(showLive and liveBearish and not regBearDiv and not hidBearDiv, title="Live Bearish", style=shape.triangledown, location=location.abovebar, color=liveCol, size=size.tiny)
+
+// ============================================================================
+// STRATEGY STATE — STOPS & TRAILING LEVELS
+// ============================================================================
+
+var float entryPrice    = na
+var float longWickSL    = na
+var float shortWickSL   = na
+var float longTSLLevel  = na
+var float shortTSLLevel = na
+var int   longTSLStep   = 0
+var int   shortTSLStep  = 0
+var bool  longBEMoved   = false
+var bool  shortBEMoved  = false
+var line  slLineViz     = na
+var line  tslLineViz    = na
+
+closeLine(line ln) =>
+    if not na(ln)
+        line.set_extend(ln, extend.none)
+        line.set_x2(ln, bar_index)
+
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+// Per-bar tracking so the SL-hit detector at end of script doesn't double-fire
+// when an entry/close/flip block already emitted a webhook alert.
+bool botAlertedThisBar = false
+
+// ============================================================================
+// REVERSAL / EXIT-ON-OPPOSITE-LIVE-DIVERGENCE
+// ============================================================================
+
+// Close long on bearish exit signal — only when we're not about to flip into a confirmed short
+if inLong and bearExitSignal and not (bearSignalConfirmed and tradeShorts) and inDateWindow
+    strategy.close("Long", comment="Close Long (Bear Div)")
+    alert(alertJson("sell", "flat", "long", "Close Long (Bear Div)"), alert.freq_once_per_bar_close)
+    botAlertedThisBar := true
+    closeLine(slLineViz)
+    closeLine(tslLineViz)
+    entryPrice   := na
+    longWickSL   := na
+    longTSLLevel := na
+    longTSLStep  := 0
+    longBEMoved  := false
+
+// Close short on bullish exit signal — only when we're not about to flip into a confirmed long
+if inShort and bullExitSignal and not (bullSignalConfirmed and tradeLongs) and inDateWindow
+    strategy.close("Short", comment="Close Short (Bull Div)")
+    alert(alertJson("buy", "flat", "short", "Close Short (Bull Div)"), alert.freq_once_per_bar_close)
+    botAlertedThisBar := true
+    closeLine(slLineViz)
+    closeLine(tslLineViz)
+    entryPrice    := na
+    shortWickSL   := na
+    shortTSLLevel := na
+    shortTSLStep  := 0
+    shortBEMoved  := false
+
+// ============================================================================
+// ENTRIES
+// ============================================================================
+
+canEnterLong  = tradeLongs  and bullSignalConfirmed and not inLong  and inDateWindow
+canEnterShort = tradeShorts and bearSignalConfirmed and not inShort and inDateWindow
+
+// Refresh wick stop on consecutive same-direction signals (tightening only, never loosening).
+if inLong and bullSignalConfirmed and useSignalWickStop
+    newWickSL = low[pivotRightBars] * (1 - wickBufferPct / 100)
+    longWickSL := na(longWickSL) ? newWickSL : math.max(longWickSL, newWickSL)
+    if showSLLines
+        closeLine(slLineViz)
+        slLineViz := line.new(bar_index, longWickSL, bar_index + 1, longWickSL, color=slLineCol, width=2, style=line.style_dashed, extend=extend.right)
+
+if inShort and bearSignalConfirmed and useSignalWickStop
+    newWickSL = high[pivotRightBars] * (1 + wickBufferPct / 100)
+    shortWickSL := na(shortWickSL) ? newWickSL : math.min(shortWickSL, newWickSL)
+    if showSLLines
+        closeLine(slLineViz)
+        slLineViz := line.new(bar_index, shortWickSL, bar_index + 1, shortWickSL, color=slLineCol, width=2, style=line.style_dashed, extend=extend.right)
+
+if canEnterLong
+    longPrevPos = inShort ? "short" : "flat"
+    longComment = inShort ? "Reverse to Long" : "LONG"
+    if inShort
+        if reverseOnSignal
+            strategy.close("Short", comment="Reverse to Long")
+            closeLine(slLineViz)
+            closeLine(tslLineViz)
+            shortWickSL   := na
+            shortTSLLevel := na
+            shortTSLStep  := 0
+            shortBEMoved  := false
+
+    strategy.entry("Long", strategy.long, comment="LONG")
+    alert(alertJson("buy", "long", longPrevPos, longComment), alert.freq_once_per_bar_close)
+    botAlertedThisBar := true
+    entryPrice := close
+    if useSignalWickStop
+        longWickSL := low[pivotRightBars] * (1 - wickBufferPct / 100)
+        if showSLLines
+            slLineViz := line.new(bar_index, longWickSL, bar_index + 1, longWickSL, color=slLineCol, width=2, style=line.style_dashed, extend=extend.right)
+    longTSLLevel := na
+    longTSLStep  := 0
+    longBEMoved  := false
+
+if canEnterShort
+    shortPrevPos = inLong ? "long" : "flat"
+    shortComment = inLong ? "Reverse to Short" : "SHORT"
+    if inLong
+        if reverseOnSignal
+            strategy.close("Long", comment="Reverse to Short")
+            closeLine(slLineViz)
+            closeLine(tslLineViz)
+            longWickSL   := na
+            longTSLLevel := na
+            longTSLStep  := 0
+            longBEMoved  := false
+
+    strategy.entry("Short", strategy.short, comment="SHORT")
+    alert(alertJson("sell", "short", shortPrevPos, shortComment), alert.freq_once_per_bar_close)
+    botAlertedThisBar := true
+    entryPrice := close
+    if useSignalWickStop
+        shortWickSL := high[pivotRightBars] * (1 + wickBufferPct / 100)
+        if showSLLines
+            slLineViz := line.new(bar_index, shortWickSL, bar_index + 1, shortWickSL, color=slLineCol, width=2, style=line.style_dashed, extend=extend.right)
+    shortTSLLevel := na
+    shortTSLStep  := 0
+    shortBEMoved  := false
+
+// ============================================================================
+// BREAKEVEN MOVE — shift wick SL to entry once price moves +X% in favor.
+// Triggers once per trade. The breakeven level cannot be loosened by later logic.
+// ============================================================================
+
+if useBreakevenMove and inLong and not na(entryPrice) and not longBEMoved
+    gainPctBE = ((high - entryPrice) / entryPrice) * 100
+    if gainPctBE >= breakevenTrigger
+        longWickSL  := na(longWickSL) ? entryPrice : math.max(longWickSL, entryPrice)
+        longBEMoved := true
+        if showSLLines
+            closeLine(slLineViz)
+            beCol = showBELine ? beLineCol : slLineCol
+            slLineViz := line.new(bar_index, longWickSL, bar_index + 1, longWickSL, color=beCol, width=2, style=line.style_dashed, extend=extend.right)
+
+if useBreakevenMove and inShort and not na(entryPrice) and not shortBEMoved
+    gainPctBE = ((entryPrice - low) / entryPrice) * 100
+    if gainPctBE >= breakevenTrigger
+        shortWickSL  := na(shortWickSL) ? entryPrice : math.min(shortWickSL, entryPrice)
+        shortBEMoved := true
+        if showSLLines
+            closeLine(slLineViz)
+            beCol = showBELine ? beLineCol : slLineCol
+            slLineViz := line.new(bar_index, shortWickSL, bar_index + 1, shortWickSL, color=beCol, width=2, style=line.style_dashed, extend=extend.right)
+
+// ============================================================================
+// MILESTONE TRAILING STOP UPDATE
+// ============================================================================
+
+if useMilestoneTSL and inLong and not na(entryPrice)
+    currentGainPct = ((high - entryPrice) / entryPrice) * 100
+    if currentGainPct >= tslStep5 and longTSLStep < 5
+        longTSLStep  := 5
+        longTSLLevel := entryPrice * (1 + tslStep5 / 100)
+    else if currentGainPct >= tslStep4 and longTSLStep < 4
+        longTSLStep  := 4
+        longTSLLevel := entryPrice * (1 + tslStep4 / 100)
+    else if currentGainPct >= tslStep3 and longTSLStep < 3
+        longTSLStep  := 3
+        longTSLLevel := entryPrice * (1 + tslStep3 / 100)
+    else if currentGainPct >= tslStep2 and longTSLStep < 2
+        longTSLStep  := 2
+        longTSLLevel := entryPrice * (1 + tslStep2 / 100)
+    else if currentGainPct >= tslStep1 and longTSLStep < 1
+        longTSLStep  := 1
+        longTSLLevel := entryPrice * (1 + tslStep1 / 100)
+    if showTSLLines and not na(longTSLLevel)
+        closeLine(tslLineViz)
+        tslLineViz := line.new(bar_index, longTSLLevel, bar_index + 1, longTSLLevel, color=tslLineCol, width=2, style=line.style_dotted, extend=extend.right)
+
+if useMilestoneTSL and inShort and not na(entryPrice)
+    currentGainPct = ((entryPrice - low) / entryPrice) * 100
+    if currentGainPct >= tslStep5 and shortTSLStep < 5
+        shortTSLStep  := 5
+        shortTSLLevel := entryPrice * (1 - tslStep5 / 100)
+    else if currentGainPct >= tslStep4 and shortTSLStep < 4
+        shortTSLStep  := 4
+        shortTSLLevel := entryPrice * (1 - tslStep4 / 100)
+    else if currentGainPct >= tslStep3 and shortTSLStep < 3
+        shortTSLStep  := 3
+        shortTSLLevel := entryPrice * (1 - tslStep3 / 100)
+    else if currentGainPct >= tslStep2 and shortTSLStep < 2
+        shortTSLStep  := 2
+        shortTSLLevel := entryPrice * (1 - tslStep2 / 100)
+    else if currentGainPct >= tslStep1 and shortTSLStep < 1
+        shortTSLStep  := 1
+        shortTSLLevel := entryPrice * (1 - tslStep1 / 100)
+    if showTSLLines and not na(shortTSLLevel)
+        closeLine(tslLineViz)
+        tslLineViz := line.new(bar_index, shortTSLLevel, bar_index + 1, shortTSLLevel, color=tslLineCol, width=2, style=line.style_dotted, extend=extend.right)
+
+// ============================================================================
+// EFFECTIVE STOP — submit to broker every bar so wick fills are realistic
+// ============================================================================
+
+longEffectiveStop  = na(longTSLLevel)  ? longWickSL  : (na(longWickSL)  ? longTSLLevel  : math.max(longWickSL, longTSLLevel))
+shortEffectiveStop = na(shortTSLLevel) ? shortWickSL : (na(shortWickSL) ? shortTSLLevel : math.min(shortWickSL, shortTSLLevel))
+
+if inLong and not na(longEffectiveStop)
+    strategy.exit("Long SL", from_entry="Long", stop=longEffectiveStop)
+
+if inShort and not na(shortEffectiveStop)
+    strategy.exit("Short SL", from_entry="Short", stop=shortEffectiveStop)
+
+// ============================================================================
+// EXIT LABELS
+// ============================================================================
+
+var float trackedEntryPrice = na
+var int   trackedEntryBar   = na
+var bool  trackedIsLong     = false
+var bool  trackedBEMoved    = false
+
+if strategy.position_size != 0
+    if na(trackedEntryPrice) or strategy.opentrades > 0
+        trackedEntryPrice := strategy.opentrades.entry_price(strategy.opentrades - 1)
+        trackedEntryBar   := strategy.opentrades.entry_bar_index(strategy.opentrades - 1)
+        trackedIsLong     := strategy.position_size > 0
+    trackedBEMoved := trackedIsLong ? longBEMoved : shortBEMoved
+
+var bool prevHadPosition = false
+hasPositionNow = strategy.position_size != 0
+
+if prevHadPosition and not hasPositionNow and showExitLabels and strategy.closedtrades > 0
+    lastIdx     = strategy.closedtrades - 1
+    exitPrice   = strategy.closedtrades.exit_price(lastIdx)
+    entryPx     = strategy.closedtrades.entry_price(lastIdx)
+    wasLong     = strategy.closedtrades.size(lastIdx) > 0
+    pnlPct      = wasLong ? ((exitPrice - entryPx) / entryPx) * 100 : ((entryPx - exitPrice) / entryPx) * 100
+
+    string exitType = ""
+    color  bgColor  = beLabelCol
+    if math.abs(pnlPct) < 0.15
+        exitType := "BE"
+        bgColor  := beLabelCol
+    else if pnlPct > 0
+        exitType := "WIN"
+        bgColor  := winLabelCol
+    else
+        exitType := "LOSS"
+        bgColor  := lossLabelCol
+
+    if trackedBEMoved and math.abs(pnlPct) < 0.5 and pnlPct <= 0.15
+        exitType := "BE-STOP"
+        bgColor  := beLabelCol
+
+    labelText = exitType + "\n" + (pnlPct >= 0 ? "+" : "") + str.tostring(pnlPct, "#.##") + "%"
+
+    putAbove = wasLong ? (pnlPct >= 0) : (pnlPct < 0)
+    offsetAbs = exitPrice * (exitLabelOffsetPct / 100)
+    labelY    = putAbove ? (exitPrice + offsetAbs) : (exitPrice - offsetAbs)
+    labelStyle = putAbove ? label.style_label_down : label.style_label_up
+
+    line.new(bar_index, exitPrice, bar_index, labelY, color=color.new(bgColor, 50), width=1, style=line.style_dotted)
+    label.new(bar_index, labelY, text=labelText, color=bgColor, textcolor=color.white, style=labelStyle, size=size.small)
+
+// ============================================================================
+// CLEANUP STATE + STOP-HIT WEBHOOK ALERT
+// On the bar where the position transitions from open to flat, fire a webhook
+// alert IF none of the entry/close/flip blocks above already did. This catches
+// stop-loss fills (wick stop, breakeven, or milestone TSL) which the strategy
+// detects asynchronously via strategy.exit's broker fill.
+// ============================================================================
+
+var float botPrevPositionSize = 0
+
+if prevHadPosition and not hasPositionNow
+    if not botAlertedThisBar
+        wasLongOnPrev = botPrevPositionSize > 0
+        if wasLongOnPrev
+            alert(alertJson("sell", "flat", "long", "Stop hit"), alert.freq_once_per_bar_close)
+        else
+            alert(alertJson("buy", "flat", "short", "Stop hit"), alert.freq_once_per_bar_close)
+    closeLine(slLineViz)
+    closeLine(tslLineViz)
+    entryPrice    := na
+    longWickSL    := na
+    shortWickSL   := na
+    longTSLLevel  := na
+    shortTSLLevel := na
+    longTSLStep   := 0
+    shortTSLStep  := 0
+    longBEMoved   := false
+    shortBEMoved  := false
+    trackedEntryPrice := na
+    trackedEntryBar   := na
+    trackedBEMoved    := false
+
+prevHadPosition := hasPositionNow
+botPrevPositionSize := strategy.position_size
+
+// ============================================================================
+// ALERT CONDITIONS (visual / dialog use only — webhooks fire via alert() above)
+// ============================================================================
+
+alertcondition(regBullDiv,    title="Confirmed Bullish Divergence", message="Confirmed Bullish RSI Divergence")
+alertcondition(regBearDiv,    title="Confirmed Bearish Divergence", message="Confirmed Bearish RSI Divergence")
+alertcondition(liveBullish,   title="Live Bullish Divergence",      message="Bullish RSI Divergence forming")
+alertcondition(liveBearish,   title="Live Bearish Divergence",      message="Bearish RSI Divergence forming")
+alertcondition(canEnterLong,  title="Long Entry",                   message="RSI Divergence: Enter Long")
+alertcondition(canEnterShort, title="Short Entry",                  message="RSI Divergence: Enter Short")

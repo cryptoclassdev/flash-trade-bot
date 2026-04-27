@@ -1,62 +1,99 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const PINE_PATH = join(__dirname, "..", "..", "..", "tradingview-strategy.pine");
+const STRATEGIES_DIR = join(__dirname, "..", "..", "..", "strategies");
+const REGISTRY_PATH = join(STRATEGIES_DIR, "registry.json");
 
-test("Pine schema: secret is sourced from input, not a TradingView placeholder", () => {
-  const src = readFileSync(PINE_PATH, "utf8");
-  // TradingView does NOT substitute {{...}} placeholders in strings passed
-  // to alert() — only in the alert dialog's Message field. Our Pine uses
-  // alert(), so any {{SECRET}} literal would be sent verbatim and rejected
-  // by verify.ts. Secret must come from input.string(...) instead.
-  assert.ok(
-    !src.includes("{{SECRET}}"),
-    "tradingview-strategy.pine contains {{SECRET}} which TradingView will NOT substitute in alert() calls. Use input.string() for the secret."
-  );
-  assert.ok(
-    /input\.string\(\s*"[^"]*"\s*,\s*"[^"]*Secret/i.test(src),
-    "tradingview-strategy.pine should declare the webhook secret via input.string(...)"
-  );
+interface RegistryEntry {
+  id: string;
+  name: string;
+  description: string;
+  asset: string;
+  timeframe: string;
+  longShort: "long" | "short" | "both";
+  file: string;
+  tags?: string[];
+}
+
+const registry: RegistryEntry[] = JSON.parse(
+  readFileSync(REGISTRY_PATH, "utf8"),
+);
+
+test("Strategies registry: at least one strategy listed", () => {
+  assert.ok(registry.length >= 1, "strategies/registry.json must list at least one strategy");
 });
 
-test("Pine schema: no hardcoded hex secret leaks into the source", () => {
-  const src = readFileSync(PINE_PATH, "utf8");
-  // Guard against regressing the fix that stripped Sebastian's original
-  // baked-in secret from the initial-commit Pine. Any 64-char hex literal
-  // inside a "secret":"..." JSON field is a live credential in a public
-  // repo — fail the build.
-  const hexSecretInJson = /"secret":"[0-9a-fA-F]{32,}"/;
-  assert.ok(
-    !hexSecretInJson.test(src),
-    "tradingview-strategy.pine has a hardcoded hex WEBHOOK_SECRET in a JSON field. Use Pine string concatenation against the WEBHOOK_SECRET input instead."
-  );
-  // Positive assertion: every "secret" field MUST be built via Pine string
-  // concat against the WEBHOOK_SECRET input variable.
-  const concatPattern = /"secret":"'\s*\+\s*WEBHOOK_SECRET\s*\+\s*'"/;
-  assert.ok(
-    concatPattern.test(src),
-    "tradingview-strategy.pine should build the secret JSON field via: \"secret\":\"' + WEBHOOK_SECRET + '\""
-  );
-});
-
-test("Pine schema: alertJson emits all fields verify.ts requires", () => {
-  const src = readFileSync(PINE_PATH, "utf8");
-  const required = [
-    '"secret":"',
-    '"id":"',
-    '"action":"',
-    '"ticker":"',
-    '"contracts":"',
-    '"price":"',
-    '"position_size_after":"',
-    '"market_position":"',
-    '"prev_market_position":"',
-    '"order_comment":"',
-    '"time":"',
-  ];
-  for (const field of required) {
-    assert.ok(src.includes(field), `Pine schema missing field ${field}`);
+test("Strategies registry: each entry's id matches its filename", () => {
+  for (const entry of registry) {
+    assert.equal(
+      entry.file,
+      `${entry.id}.pine`,
+      `entry.file must equal '<id>.pine' (got id=${entry.id}, file=${entry.file})`,
+    );
   }
 });
+
+test("Strategies registry: every Pine file in strategies/ is registered", () => {
+  const files = readdirSync(STRATEGIES_DIR).filter((f) => f.endsWith(".pine"));
+  const registeredFiles = new Set(registry.map((r) => r.file));
+  for (const f of files) {
+    assert.ok(
+      registeredFiles.has(f),
+      `${f} exists in strategies/ but is not in registry.json — orphan strategy`,
+    );
+  }
+});
+
+// Run the schema invariants against EVERY Pine file in the registry. Adding a
+// new strategy that breaks the contract fails CI immediately.
+for (const entry of registry) {
+  const path = join(STRATEGIES_DIR, entry.file);
+
+  test(`Pine schema [${entry.id}]: secret is sourced from input, not a TradingView placeholder`, () => {
+    const src = readFileSync(path, "utf8");
+    assert.ok(
+      !src.includes("{{SECRET}}"),
+      `${entry.file} contains {{SECRET}} which TradingView will NOT substitute in alert() calls. Use input.string() for the secret.`,
+    );
+    assert.ok(
+      /input\.string\(\s*"[^"]*"\s*,\s*"[^"]*Secret/i.test(src),
+      `${entry.file} should declare the webhook secret via input.string(...) with "Secret" in the title`,
+    );
+  });
+
+  test(`Pine schema [${entry.id}]: no hardcoded hex secret leaks into the source`, () => {
+    const src = readFileSync(path, "utf8");
+    const hexSecretInJson = /"secret":"[0-9a-fA-F]{32,}"/;
+    assert.ok(
+      !hexSecretInJson.test(src),
+      `${entry.file} has a hardcoded hex WEBHOOK_SECRET in a JSON field. Use Pine string concatenation against the WEBHOOK_SECRET input instead.`,
+    );
+    const concatPattern = /"secret":"'\s*\+\s*WEBHOOK_SECRET\s*\+\s*'"/;
+    assert.ok(
+      concatPattern.test(src),
+      `${entry.file} should build the secret JSON field via: "secret":"' + WEBHOOK_SECRET + '"`,
+    );
+  });
+
+  test(`Pine schema [${entry.id}]: alertJson emits all fields verify.ts requires`, () => {
+    const src = readFileSync(path, "utf8");
+    const required = [
+      '"secret":"',
+      '"id":"',
+      '"action":"',
+      '"ticker":"',
+      '"contracts":"',
+      '"price":"',
+      '"position_size_after":"',
+      '"market_position":"',
+      '"prev_market_position":"',
+      '"order_comment":"',
+      '"time":"',
+    ];
+    for (const field of required) {
+      assert.ok(src.includes(field), `${entry.file} schema missing field ${field}`);
+    }
+  });
+}
